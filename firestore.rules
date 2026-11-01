@@ -1,0 +1,53 @@
+rules_version = '2';
+// Paste this into Firebase console → Firestore Database → Rules, then Publish.
+// The server (Vercel API with the service account) bypasses these rules; they only limit what phones can do directly.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isManager() { return signedIn() && request.auth.token.role == 'manager'; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    // Staff profiles, stats and badges. Written only by the server.
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isManager());
+      allow write: if false;
+    }
+
+    // Task types and locations shown on the dispatch screen.
+    match /config/{doc} {
+      allow read: if signedIn();
+      allow write: if isManager();
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isManager() || (signedIn() && resource.data.staffId == request.auth.uid);
+      allow create, delete: if false; // created by /api/assign
+
+      allow update: if
+        // Staff accepts their own task.
+        (signedIn()
+          && resource.data.staffId == request.auth.uid
+          && resource.data.status == 'assigned'
+          && request.resource.data.status == 'accepted'
+          && request.resource.data.acceptedAt == request.time
+          && changed().hasOnly(['status', 'acceptedAt']))
+        ||
+        // Manager cancels an open task.
+        (isManager()
+          && resource.data.open == true
+          && request.resource.data.status == 'cancelled'
+          && request.resource.data.open == false
+          && request.resource.data.cancelledAt == request.time
+          && request.resource.data.cancelledBy == request.auth.uid
+          && changed().hasOnly(['status', 'open', 'cancelledAt', 'cancelledBy']));
+    }
+
+    // One doc per device; the doc id is the push token. Only the server reads these.
+    match /pushTokens/{token} {
+      allow read: if false;
+      allow create, update: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow delete: if signedIn() && resource.data.uid == request.auth.uid;
+    }
+  }
+}

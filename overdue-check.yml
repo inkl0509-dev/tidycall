@@ -1,0 +1,17 @@
+# Backup overdue check. Runs every 5 minutes (GitHub may delay scheduled runs a little).
+# For checks every minute, also set up cron-job.org as described in the README.
+# Needs two repository secrets: APP_URL (e.g. https://tidycall.vercel.app) and CRON_SECRET (same value as in Vercel).
+name: Overdue check
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Ask the app to alert managers about overdue tasks
+        run: |
+          curl -fsS -X POST "${{ secrets.APP_URL }}/api/check-overdue" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}"
