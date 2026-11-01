@@ -1,0 +1,43 @@
+plugins {
+    id 'com.android.application'
+}
+
+// ─── Change these two lines if your website address or app ID is different ───
+def siteHost = 'tidycall.vercel.app'          // your Vercel address, without https://
+def appId    = 'com.tidycall.app'             // unique app ID, never change after publishing
+
+android {
+    namespace 'com.tidycall.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId appId
+        minSdk 21
+        targetSdk 35
+        versionCode 1
+        versionName '1.0'
+
+        manifestPlaceholders = [hostName: siteHost, appId: appId]
+        resValue 'string', 'host', siteHost
+        resValue 'string', 'launch_url', "https://${siteHost}/"
+        resValue 'string', 'asset_statements',
+            "[{ \\\"relation\\\": [\\\"delegate_permission/common.handle_all_urls\\\"], \\\"target\\\": {\\\"namespace\\\": \\\"web\\\", \\\"site\\\": \\\"https://${siteHost}\\\"}}]"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // Google's library for Trusted Web Activities: shows the website full screen as an app,
+    // and lets the website's push notifications appear as this app's notifications.
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+}

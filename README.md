@@ -2,7 +2,7 @@
 
 Managers send a task ("Clean · Toilet 2 · 10 min") to one housekeeper. The housekeeper's phone gets a push notification and the timer starts. They tap **Done**, the manager's board updates live (no push), and the housekeeper earns a badge. If the timer runs out, every manager gets a push alert.
 
-**Stack:** HTML + JavaScript (no framework) · Firebase (login, Firestore live database, Cloud Messaging push) · Vercel (hosting + server functions) · GitHub (code) · Android app made from the website with PWABuilder.
+**Stack:** HTML + JavaScript (no framework) · Firebase (login, Firestore live database, Cloud Messaging push) · Vercel (hosting + server functions) · GitHub (code) · Android app (`android/` folder, Android Studio) that opens the website full screen.
 
 ---
 
@@ -93,6 +93,8 @@ Repository → **Settings → Secrets and variables → Actions → New reposito
 > Vercel's own cron jobs only run once a day on the free plan, so they are not used here. On Vercel Pro you can add `"crons": [{ "path": "/api/check-overdue", "schedule": "* * * * *" }]` to `vercel.json` instead.
 
 ### 7. Android app
+The full Android Studio project is in the `android` folder; see `android/README.md` to build the APK yourself. The quicker route without Android Studio is PWABuilder, below.
+
 The Android app wraps your website (a *Trusted Web Activity*), so you only maintain one codebase and push notifications keep working.
 
 1. Go to <https://www.pwabuilder.com>, enter your Vercel URL, click **Start**, then **Package for stores → Android → Generate package**.
@@ -142,6 +144,7 @@ cron-job.org ─POST /api/check-overdue─▶ Vercel ──▶ push to all manag
 | `api/test-push.js` | Test notification |
 | `api/assetlinks.js` | Android app verification file |
 | `firestore.rules` | Who can read/change what in the database |
+| `android/` | Android Studio project for the mobile app |
 
 **Firestore collections:** `users` (name, role, stats, badges) · `tasks` (what, where, who, status, times, badge) · `config/app` (task types, places) · `pushTokens` (one per device).
 
@@ -163,5 +166,8 @@ cron-job.org ─POST /api/check-overdue─▶ Vercel ──▶ push to all manag
 | No notifications on Android app | Phone Settings → Apps → TidyCall → Notifications → allow. Also turn off battery optimisation for the app so Android doesn't delay pushes |
 | Overdue push only when app is open | Set up cron-job.org (step 6) |
 | Forgot a PIN | A manager uses **Team → Reset PIN** |
+
+## Run on your own computer
+VS Code Live Server only shows pages and can't run the `api` folder. To run everything locally: `npm i -g vercel`, then in this folder `vercel link`, `vercel env pull`, `vercel dev`, and open <http://localhost:3000>.
 
 Badge rules can be tested with `npm test`.
