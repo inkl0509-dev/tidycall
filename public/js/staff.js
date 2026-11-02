@@ -1,7 +1,7 @@
 // Staff screen: live list of my tasks, Accept / Done, countdown, badges.
 import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { db, api } from './firebase.js';
-import { h, fill, mount, toast, sound, buzz, ms, clock, duration, busy, listenError, dialog } from './ui.js';
+import { h, fill, mount, toast, play, ms, clock, duration, busy, listenError, dialog, soundSettings } from './ui.js';
 import { pushBanner, refreshPushIfGranted, onForegroundPush } from './push.js';
 
 const B = self.BADGES;
@@ -26,6 +26,7 @@ export function start({ user, logout, brand }) {
       brand(),
       h('div.topbar-right',
         h('span.who', user.displayName || ''),
+        h('button.icon-btn.sound-btn', { type: 'button', 'aria-label': 'Sound settings', title: 'Sound settings', onclick: () => dialog('Sounds', () => h('div.sheet-body', soundSettings('staff'))) }, '🔊'),
         h('button.btn.ghost.small', { type: 'button', onclick: logout }, 'Sign out'))),
     h('main.staff-main',
       banner,
@@ -36,8 +37,15 @@ export function start({ user, logout, brand }) {
   mount(screen);
 
   refreshPushIfGranted('staff').then((ok) => { if (ok && banner) banner.remove(); });
-  // Push that arrives while the app is open: the live list already shows it, so just play the sound if it is new.
-  onForegroundPush(() => {});
+  // Push that arrives while the app is open: new tasks and most reminders already sound from the live list and timer.
+  onForegroundPush((p) => {
+    const d = (p && p.data) || {};
+    // Repeat "still not done" reminders aren't covered by the on-screen timer, so play them here.
+    if (d.type === 'reminder' && d.step === 'overdueReminder') {
+      play('timesUp');
+      if (p.notification) toast(`${p.notification.title}: ${p.notification.body}`, 'error', 9000);
+    }
+  });
 
   // ---- Live data ----
   const qTasks = query(collection(db, 'tasks'), where('staffId', '==', uid), where('open', '==', true));
@@ -59,8 +67,7 @@ export function start({ user, logout, brand }) {
   const unsubMe = onSnapshot(doc(db, 'users', uid), (d) => { profile = d.data() || {}; renderBadges(); }, listenError);
 
   function newTaskAlert(t) {
-    if (t.priority === 'urgent') { sound.urgent(); buzz([400, 120, 400, 120, 600]); }
-    else { sound.newTask(); buzz([250, 100, 250]); }
+    play(t.priority === 'urgent' ? 'urgentTask' : 'newTask');
     toast(`New task: ${t.typeLabel} · ${t.location}`, t.priority === 'urgent' ? 'error' : 'ok', 6000);
     setTimeout(() => {
       const card = document.querySelector(`[data-task="${t.id}"]`);
@@ -134,15 +141,15 @@ export function start({ user, logout, brand }) {
     const r = B.reminderTimes(t);
     const steps = [
       ['notAccepted', r.notAccepted, t.status === 'assigned', () => {
-        sound.soft(); buzz([200, 100, 200]);
+        play('reminder');
         toast(`Reminder: ${t.location}. Tap "On my way" so your manager knows you're on it.`, 'warn', 7000);
       }],
       ['almostDue', r.almostDue, true, () => {
-        sound.urgent(); buzz([300, 100, 300]);
+        play('almostDue');
         toast(`Almost out of time: ${t.location}. Finish and tap Done to keep your points.`, 'warn', 7000);
       }],
       ['due', r.due, true, () => {
-        sound.overdue(); buzz([500, 200, 500]);
+        play('timesUp');
         toast(`Time's up: ${t.location}. Your manager has been told. Finishing late costs points.`, 'error', 9000);
       }],
     ];
@@ -168,7 +175,7 @@ export function start({ user, logout, brand }) {
       try {
         finishedByMe.add(t.id);
         const r = await api('complete', { taskId: t.id });
-        if (r.badge.bad) { sound.overdue(); buzz([300]); } else { sound.done(); buzz([80, 60, 160]); }
+        play(r.badge.bad ? 'lateDone' : 'taskDone');
         celebrate(t, r);
       } catch (e) {
         finishedByMe.delete(t.id);
