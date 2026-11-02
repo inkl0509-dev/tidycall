@@ -87,17 +87,20 @@ async function pushToUsers(uids, msg) {
       data: Object.fromEntries(Object.entries(msg.data || {}).map(([k, v]) => [k, String(v)])),
       webpush: {
         headers: { Urgency: 'high', TTL: String(msg.ttl || 3600) },
-        notification: {
-          title: msg.title,
-          body: msg.body,
-          icon: '/icons/icon-192.png',
-          badge: '/icons/badge-72.png',
-          tag: msg.tag,
-          renotify: true,
-          silent: false, // always use the phone's notification sound
-          requireInteraction: !!msg.requireInteraction,
-          vibrate: msg.vibrate || [200, 100, 200],
-        },
+        notification: msg.silent
+          // Quiet update that replaces an earlier notification with the same tag (e.g. "Aisha is on it").
+          ? { title: msg.title, body: msg.body, icon: '/icons/icon-192.png', badge: '/icons/badge-72.png', tag: msg.tag, silent: true }
+          : {
+            title: msg.title,
+            body: msg.body,
+            icon: '/icons/icon-192.png',
+            badge: '/icons/badge-72.png',
+            tag: msg.tag,
+            renotify: true,
+            silent: false, // normal alerts always use the phone's notification sound
+            requireInteraction: !!msg.requireInteraction,
+            vibrate: msg.vibrate || [200, 100, 200],
+          },
         fcmOptions: msg.link ? { link: msg.link } : undefined,
       },
       android: { priority: 'high' },

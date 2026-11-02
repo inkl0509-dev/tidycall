@@ -40,7 +40,10 @@ module.exports = route(['GET', 'POST'], async (req) => {
     const what = `${t.typeEmoji ? t.typeEmoji + ' ' : ''}${t.typeLabel}`;
     const reminders = (t.reminders || 0) + 1;
     const staffLink = `${base}/?task=${doc.id}`;
-    const staffPush = (title, body, urgent) => pushToUsers([t.staffId], {
+    // Unaccepted group task: remind everyone it was sent to.
+    const unclaimed = !t.staffId;
+    const recipients = unclaimed ? (t.staffIds || []) : [t.staffId];
+    const staffPush = (title, body, urgent) => pushToUsers(recipients, {
       title, body, tag: `task-${doc.id}`, requireInteraction: true,
       vibrate: urgent ? [500, 200, 500, 200, 500] : [250, 100, 250],
       link: staffLink, data: { type: 'reminder', taskId: doc.id, step: action },
@@ -65,7 +68,9 @@ module.exports = route(['GET', 'POST'], async (req) => {
     const notOpened = t.status === 'assigned';
 
     if (action === 'notAccepted') {
-      await staffPush(`🔔 Reminder: ${what}`, `${t.location} · please tap "On my way" · ${leftMin} min left`);
+      await staffPush(`🔔 Reminder: ${what}`, unclaimed
+        ? `${t.location} · nobody has taken it yet. Tap "I'll take it" · ${leftMin} min left`
+        : `${t.location} · please tap "On my way" · ${leftMin} min left`);
       reminded++;
     } else if (action === 'almostDue') {
       await staffPush(`⏳ ${leftMin} min left: ${what}`, `${t.location} · finish and tap Done to avoid losing points`, true);
@@ -77,7 +82,9 @@ module.exports = route(['GET', 'POST'], async (req) => {
       const second = action === 'managerRepeat';
       await pushToUsers(await managers(), {
         title: `${second ? '🚨 Still overdue' : '⏰ Overdue'}: ${what}`,
-        body: `${t.staffName} ${notOpened ? "hasn't opened" : "hasn't finished"} ${t.location} · ${overMin} min over (${t.minutes} min limit)`,
+        body: unclaimed
+          ? `Nobody has accepted ${t.location} (sent to ${(t.staffNames || []).join(', ')}) · ${overMin} min over (${t.minutes} min limit)`
+          : `${t.staffName} ${notOpened ? "hasn't opened" : "hasn't finished"} ${t.location} · ${overMin} min over (${t.minutes} min limit)`,
         tag: `overdue-${doc.id}`,
         requireInteraction: true,
         vibrate: [500, 200, 500],
