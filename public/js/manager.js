@@ -16,7 +16,7 @@ export function start({ user, logout, brand }) {
   const openMap = new Map();
   let ready = { today: false, open: false };
   const alerted = new Set();
-  const escalationAsked = new Set();
+  let lastCheck = 0;
   let dayKey = startOfToday().getTime();
 
   // Dispatch form state
@@ -103,8 +103,10 @@ export function start({ user, logout, brand }) {
     if (before.status === t.status) return;
     if (t.status === 'accepted') { sound.soft(); toast(`${t.staffName} accepted ${t.typeLabel} · ${t.location}`, 'info'); }
     if (t.status === 'done') {
-      sound.done();
-      toast(`${t.badge ? t.badge.emoji + ' ' : ''}${t.staffName} finished ${t.typeLabel} · ${t.location} in ${duration(t.durationSec)}`, 'ok', 6000);
+      const late = t.badge && t.badge.bad;
+      if (late) sound.soft(); else sound.done();
+      const pts = typeof t.points === 'number' ? ` (${t.points > 0 ? '+' : '−'}${Math.abs(t.points)} pts)` : '';
+      toast(`${t.badge ? t.badge.emoji + ' ' : ''}${t.staffName} finished ${t.typeLabel} · ${t.location} in ${duration(t.durationSec)}${late ? ', late' : ''}${pts}`, late ? 'warn' : 'ok', 6000);
       flash(t.id);
     }
   }
@@ -255,7 +257,8 @@ export function start({ user, logout, brand }) {
       ? h('div.row-time', h('span.row-clock', { dataset: { due: ms(t.dueAt) } }, '–:––'), h('small', `of ${t.minutes} min`))
       : h('div.row-time',
         h('span.row-badge', { title: t.badge ? t.badge.label : '' }, t.badge ? t.badge.emoji : '✓'),
-        h('small', `${duration(t.durationSec)}${t.onTime ? '' : ' · late'}`));
+        h('small', `${duration(t.durationSec)}${t.onTime ? '' : ' · late'}`),
+        typeof t.points === 'number' ? h(`small.row-points${t.points < 0 ? '.minus' : ''}`, `${t.points > 0 ? '+' : '−'}${Math.abs(t.points)} pts`) : null);
     return h(`div.row.st-${t.status}${t.priority === 'urgent' ? '.urgent' : ''}`, { dataset: { row: t.id } },
       h('div.row-main',
         h('div.row-title', h('span', `${t.typeEmoji || ''} ${t.typeLabel}`.trim()), t.priority === 'urgent' ? h('span.pill.pill-urgent', 'Urgent') : null),
@@ -264,7 +267,8 @@ export function start({ user, logout, brand }) {
           h('span.avatar.small', initials(t.staffName)), h('span', t.staffName),
           h(`span.status.s-${t.status}`, statusText),
           h('span.muted', isOpen ? `sent ${timeOfDay(t.createdAt)}` : `done ${timeOfDay(t.doneAt)}`),
-          isOpen && t.pushDevices === 0 ? h('span.warn-note', { title: 'Their phone has notifications off' }, 'phone not notified') : null),
+          isOpen && t.pushDevices === 0 ? h('span.warn-note', { title: 'Their phone has notifications off' }, 'phone not notified') : null,
+          t.reminders ? h('span.remind-note', { title: 'Reminders sent to their phone' }, `🔔 reminded ${t.reminders}×`) : null),
         t.note ? h('div.row-note', t.note) : null),
       right,
       isOpen ? h('div.row-actions',
@@ -283,12 +287,16 @@ export function start({ user, logout, brand }) {
       r.classList.toggle('late', left < 0);
       if (left < 0 && !wasLate && !r.closest('.sec-over')) flipped = true;
     });
-    // Overdue alerts + make sure the server escalates (push to all managers).
+    // Overdue alert on this screen.
     const overdue = [...openMap.values()].filter((t) => ms(t.dueAt) < now);
     overdue.forEach((t) => {
       if (!alerted.has(t.id)) { alerted.add(t.id); sound.overdue(); buzz([500, 200, 500]); }
-      if (!t.escalatedAt && !escalationAsked.has(t.id)) { escalationAsked.add(t.id); api('check-overdue').catch(() => {}); }
     });
+    // Ask the server to send any reminder or alert that's due (staff reminders, manager alerts). Each is sent once.
+    if (now - lastCheck > 20000 && [...openMap.values()].some((t) => B.nextAction(t, now))) {
+      lastCheck = now;
+      api('check-overdue').catch(() => {});
+    }
     alertBar.hidden = !overdue.length;
     if (overdue.length) {
       fill(alertBar, 
@@ -321,7 +329,9 @@ export function start({ user, logout, brand }) {
 
   // ---------- Team ----------
   function renderTeam() {
-    const list = [...users.values()].sort((a, b) => (a.role === b.role ? 0 : a.role === 'manager' ? 1 : -1) || (b.active !== false) - (a.active !== false) || a.name.localeCompare(b.name));
+    // Staff first, highest points on top; managers at the end.
+    const pts = (u) => (u.stats && u.stats.points) || 0;
+    const list = [...users.values()].sort((a, b) => (a.role === b.role ? 0 : a.role === 'manager' ? 1 : -1) || (b.active !== false) - (a.active !== false) || pts(b) - pts(a) || a.name.localeCompare(b.name));
     fill(teamPanel, 
       h('div.panel-head', h('h2.panel-title', 'Team'), h('button.btn', { type: 'button', onclick: addPerson }, 'Add person')),
       h('div.team-list', ...list.map(person)));
@@ -337,13 +347,18 @@ export function start({ user, logout, brand }) {
         h('span.avatar', initials(u.name)),
         h('div', h('strong', u.name), h('small', `@${u.username} · ${u.role === 'manager' ? 'Manager' : 'Staff'}${u.active === false ? ' · switched off' : ''}`))),
       u.role === 'staff' ? h('div.person-stats',
+        h(`span.points-total${(s.points || 0) < 0 ? '.minus' : ''}`, h('b', String(s.points || 0)), ' points'),
         h('span', h('b', String(s.done || 0)), ' done'),
         h('span', h('b', pct), ' on time'),
         h('span', h('b', String(s.bestStreak || 0)), ' best streak'),
         h('span', h('b', String(openCountFor(u.id))), ' open now')) : null,
       u.role === 'staff' ? h('div.person-badges',
         ...Object.values(B.TASK_BADGES).filter((b) => counts[b.id]).map((b) => h('span.mini-badge', { title: b.label }, `${b.emoji} ${counts[b.id]}`)),
-        ...owned.map((m) => h('span.mini-badge.ms', { title: `${m.label}: ${m.desc}` }, m.emoji))) : null,
+        ...owned.map((m) => h('span.mini-badge.ms', { title: `${m.label}: ${m.desc}` }, m.emoji)),
+        ...(u.badBadges || []).map((b) => h('span.mini-badge.bad', {
+          title: `${b.label}${b.where ? ' · ' + b.where : ''}: ${B.FADE_AFTER - (b.good || 0)} on-time tasks to clear`,
+          style: { '--fade': String(1 - (b.good || 0) / B.FADE_AFTER) },
+        }, `${b.emoji} ${b.good || 0}/${B.FADE_AFTER}`))) : null,
       h('div.person-actions',
         h('button.btn.ghost.small', { type: 'button', onclick: () => resetPin(u) }, 'Reset PIN'),
         u.id === me ? null : h('button.btn.ghost.small', { type: 'button', onclick: (e) => setActive(u, e.currentTarget) }, u.active === false ? 'Switch on' : 'Switch off')));
