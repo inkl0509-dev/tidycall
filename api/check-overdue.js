@@ -1,9 +1,15 @@
-// POST /api/check-overdue — finds tasks past their time limit and pushes an alert to all managers
-// (plus a reminder to the staff member). Each task is escalated once.
+// POST /api/check-overdue — runs the reminder schedule for every open task:
+//   • not accepted yet (after ~25% of the time)  → reminder push to the housekeeper
+//   • time almost up and not done                → reminder push to the housekeeper
+//   • time's up and not done                     → alert push to ALL managers + push to the housekeeper
+//   • still not done, every 5 min (max 3)        → reminder push to the housekeeper
+//   • still not done at double the time          → second alert to all managers
+// Each step happens once per task. Timing rules live in public/js/badges-def.js (REMIND).
 //
-// Called by: any signed-in app that sees a timer run out (instant), and by a scheduled job
-// (cron-job.org every minute, or the GitHub Action every 5 minutes) using CRON_SECRET.
+// Called by: the scheduled job (cron-job.org every minute / GitHub Action) using CRON_SECRET,
+// and by any open copy of the app when it sees a step is due (so it's instant while someone has the app open).
 const { db, Timestamp, bearer, requireUser, pushToUsers, baseUrl, route } = require('./_lib/firebase');
+const { nextAction } = require('../public/js/badges-def.js');
 
 module.exports = route(['GET', 'POST'], async (req) => {
   const token = bearer(req);
@@ -12,45 +18,78 @@ module.exports = route(['GET', 'POST'], async (req) => {
 
   const store = db();
   const now = Timestamp.now();
-  const since = Timestamp.fromMillis(now.toMillis() - 36 * 3600 * 1000);
-  const snap = await store.collection('tasks').where('dueAt', '<=', now).where('dueAt', '>=', since).get();
+  const nowMs = now.toMillis();
+  const snap = await store.collection('tasks').where('open', '==', true).get();
 
-  const due = snap.docs.filter((d) => d.data().open && !d.data().escalatedAt);
-  if (!due.length) return { escalated: 0 };
+  const work = snap.docs.map((d) => ({ doc: d, t: d.data(), action: nextAction(d.data(), nowMs) })).filter((w) => w.action);
+  if (!work.length) return { escalated: 0, reminded: 0 };
 
-  const managers = await store.collection('users').where('role', '==', 'manager').get();
-  const managerIds = managers.docs.filter((d) => d.data().active !== false).map((d) => d.id);
-  const base = baseUrl(req);
-
-  let escalated = 0;
-  for (const doc of due) {
-    // Claim the task; if another check got there first this write fails and we skip it.
-    try {
-      await doc.ref.update({ escalatedAt: now, overdue: true }, { lastUpdateTime: doc.updateTime });
-    } catch (e) {
-      continue;
+  let managerIds = null;
+  const managers = async () => {
+    if (!managerIds) {
+      const m = await store.collection('users').where('role', '==', 'manager').get();
+      managerIds = m.docs.filter((d) => d.data().active !== false).map((d) => d.id);
     }
-    escalated++;
-    const t = doc.data();
+    return managerIds;
+  };
+  const base = baseUrl(req);
+  let escalated = 0;
+  let reminded = 0;
+
+  for (const { doc, t, action } of work) {
     const what = `${t.typeEmoji ? t.typeEmoji + ' ' : ''}${t.typeLabel}`;
-    await pushToUsers(managerIds, {
-      title: `⏰ Overdue: ${what}`,
-      body: `${t.staffName} hasn't finished ${t.location} (${t.minutes} min limit).`,
-      tag: `overdue-${doc.id}`,
-      requireInteraction: true,
-      vibrate: [500, 200, 500],
-      link: `${base}/?view=board&task=${doc.id}`,
-      data: { type: 'overdue', taskId: doc.id },
+    const reminders = (t.reminders || 0) + 1;
+    const staffLink = `${base}/?task=${doc.id}`;
+    const staffPush = (title, body, urgent) => pushToUsers([t.staffId], {
+      title, body, tag: `task-${doc.id}`, requireInteraction: true,
+      vibrate: urgent ? [500, 200, 500, 200, 500] : [250, 100, 250],
+      link: staffLink, data: { type: 'reminder', taskId: doc.id, step: action },
     });
-    await pushToUsers([t.staffId], {
-      title: `⏰ Time's up: ${what}`,
-      body: `${t.location} · please finish and tap Done.`,
-      tag: `task-${doc.id}`,
-      requireInteraction: true,
-      vibrate: [500, 200, 500],
-      link: `${base}/?task=${doc.id}`,
-      data: { type: 'reminder', taskId: doc.id },
-    });
+
+    // Claim the step first so two checks running at once never send it twice.
+    const claim = {
+      notAccepted: { remindedNotAccepted: now, reminders, lastReminderAt: now },
+      almostDue: { remindedAlmostDue: now, remindedNotAccepted: t.remindedNotAccepted || now, reminders, lastReminderAt: now },
+      escalate: { escalatedAt: now, overdue: true, reminders, lastReminderAt: now },
+      overdueReminder: { overdueReminders: (t.overdueReminders || 0) + 1, reminders, lastReminderAt: now },
+      managerRepeat: { managerRepeatAt: now },
+    }[action];
+    try {
+      await doc.ref.update(claim, { lastUpdateTime: doc.updateTime });
+    } catch (e) {
+      continue; // someone else handled it
+    }
+
+    const leftMin = Math.max(1, Math.round((t.dueAt.toMillis() - nowMs) / 60000));
+    const overMin = Math.max(1, Math.round((nowMs - t.dueAt.toMillis()) / 60000));
+    const notOpened = t.status === 'assigned';
+
+    if (action === 'notAccepted') {
+      await staffPush(`🔔 Reminder: ${what}`, `${t.location} · please tap "On my way" · ${leftMin} min left`);
+      reminded++;
+    } else if (action === 'almostDue') {
+      await staffPush(`⏳ ${leftMin} min left: ${what}`, `${t.location} · finish and tap Done to avoid losing points`, true);
+      reminded++;
+    } else if (action === 'overdueReminder') {
+      await staffPush(`⏰ Still not done: ${what}`, `${t.location} · ${overMin} min over time · tap Done when finished`, true);
+      reminded++;
+    } else if (action === 'escalate' || action === 'managerRepeat') {
+      const second = action === 'managerRepeat';
+      await pushToUsers(await managers(), {
+        title: `${second ? '🚨 Still overdue' : '⏰ Overdue'}: ${what}`,
+        body: `${t.staffName} ${notOpened ? "hasn't opened" : "hasn't finished"} ${t.location} · ${overMin} min over (${t.minutes} min limit)`,
+        tag: `overdue-${doc.id}`,
+        requireInteraction: true,
+        vibrate: [500, 200, 500],
+        link: `${base}/?view=board&task=${doc.id}`,
+        data: { type: 'overdue', taskId: doc.id },
+      });
+      if (!second) {
+        await staffPush(`⏰ Time's up: ${what}`, `${t.location} · your manager has been told · finish and tap Done`, true);
+        reminded++;
+      }
+      escalated++;
+    }
   }
-  return { escalated };
+  return { escalated, reminded };
 });
