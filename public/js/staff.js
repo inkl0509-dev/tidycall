@@ -12,7 +12,8 @@ export function start({ user, logout, brand }) {
   let profile = null;
   let firstLoad = true;
   const finishedByMe = new Set();
-  const overdueAsked = new Set();
+  const alertedSteps = new Set(); // "taskId:step" already announced on this screen
+  let lastCheck = 0;
   const focusId = new URLSearchParams(location.search).get('task');
 
   const list = h('section.task-list', { 'aria-live': 'polite' });
@@ -118,14 +119,39 @@ export function start({ user, logout, brand }) {
       card.querySelector('.clock-label').textContent = left >= 0 ? 'left' : 'over time';
       card.classList.toggle('late', left < 0);
       card.classList.toggle('low', left >= 0 && frac < 0.25);
-      const id = card.dataset.task;
-      const t = tasks.get(id);
-      if (left < 0 && t && !t.escalatedAt && !overdueAsked.has(id)) {
-        overdueAsked.add(id);
-        sound.overdue(); buzz([500, 200, 500]);
-        api('check-overdue').catch(() => {});
-      }
+      const t = tasks.get(card.dataset.task);
+      if (t) localReminders(t, now);
     });
+    // Ask the server to send any reminder/alert that is due (it sends each one only once).
+    if (now - lastCheck > 20000 && [...tasks.values()].some((t) => B.nextAction(t, now))) {
+      lastCheck = now;
+      api('check-overdue').catch(() => {});
+    }
+  }
+
+  // Sound + message on this screen when a reminder step is reached (the push covers a locked phone).
+  function localReminders(t, now) {
+    const r = B.reminderTimes(t);
+    const steps = [
+      ['notAccepted', r.notAccepted, t.status === 'assigned', () => {
+        sound.soft(); buzz([200, 100, 200]);
+        toast(`Reminder: ${t.location}. Tap "On my way" so your manager knows you're on it.`, 'warn', 7000);
+      }],
+      ['almostDue', r.almostDue, true, () => {
+        sound.urgent(); buzz([300, 100, 300]);
+        toast(`Almost out of time: ${t.location}. Finish and tap Done to keep your points.`, 'warn', 7000);
+      }],
+      ['due', r.due, true, () => {
+        sound.overdue(); buzz([500, 200, 500]);
+        toast(`Time's up: ${t.location}. Your manager has been told. Finishing late costs points.`, 'error', 9000);
+      }],
+    ];
+    for (const [step, at, applies, fire] of steps) {
+      const key = `${t.id}:${step}`;
+      if (!at || !applies || now < at || alertedSteps.has(key)) continue;
+      alertedSteps.add(key);
+      if (now - at < 90000) fire(); // don't replay old alerts when the app is reopened later
+    }
   }
   const timer = setInterval(tick, 1000);
 
@@ -142,7 +168,7 @@ export function start({ user, logout, brand }) {
       try {
         finishedByMe.add(t.id);
         const r = await api('complete', { taskId: t.id });
-        sound.done(); buzz([80, 60, 160]);
+        if (r.badge.bad) { sound.overdue(); buzz([300]); } else { sound.done(); buzz([80, 60, 160]); }
         celebrate(t, r);
       } catch (e) {
         finishedByMe.delete(t.id);
@@ -152,16 +178,25 @@ export function start({ user, logout, brand }) {
   }
 
   function celebrate(t, r) {
-    dialog('Task done', (close) => {
-      const body = h('div.sheet-body.celebrate',
+    const pts = (n) => `${n > 0 ? '+' : '−'}${Math.abs(n)} points`;
+    dialog(r.badge.bad ? 'Done, but late' : 'Task done', (close) => {
+      const body = h(`div.sheet-body.celebrate${r.badge.bad ? '.is-bad' : ''}`,
         h('div.badge-burst', { 'aria-hidden': 'true' }, r.badge.emoji),
         h('h3', r.badge.label),
-        h('p', `${t.location} · finished in ${duration(r.durationSec)}${r.onTime ? '' : ' (after the deadline)'}`),
+        h(`p.points-delta${r.points < 0 ? '.minus' : ''}`, pts(r.points)),
+        h('p', `${t.location} · finished in ${duration(r.durationSec)}${r.onTime ? '' : ` (limit ${t.minutes} min)`}`),
+        r.badge.bad ? h('p.fade-hint', `Finish your next ${B.FADE_AFTER} tasks on time and this badge fades away.`) : null,
+        r.cleared.length ? h('div.cleared-note',
+          h('span', { 'aria-hidden': 'true' }, '✨'),
+          h('span', r.cleared.length === 1
+            ? `Your ${r.cleared[0].emoji} ${r.cleared[0].label} badge from ${r.cleared[0].where} is gone.`
+            : `${r.cleared.length} late badges are gone.`)) : null,
+        !r.badge.bad && r.activeBad.length ? h('p.fade-hint', `${r.activeBad.length} late badge${r.activeBad.length > 1 ? 's are' : ' is'} fading. Keep going.`) : null,
         r.newMilestones.length ? h('div.new-milestones',
           h('p.strong', r.newMilestones.length > 1 ? 'New badges unlocked' : 'New badge unlocked'),
           ...r.newMilestones.map((m) => h('div.milestone.got', h('span.m-emoji', m.emoji), h('div', h('strong', m.label), h('small', m.desc))))) : null,
-        h('button.btn.big.wide', { type: 'button', onclick: () => close(true) }, 'Nice'));
-      setTimeout(() => close(true), 9000);
+        h('button.btn.big.wide', { type: 'button', onclick: () => close(true) }, r.badge.bad ? 'OK' : 'Nice'));
+      setTimeout(() => close(true), 10000);
       return body;
     });
   }
@@ -171,14 +206,28 @@ export function start({ user, logout, brand }) {
     const today = new Intl.DateTimeFormat('en-CA').format(new Date());
     const todayDone = s.todayDate === today ? s.todayDone || 0 : 0;
     const pct = s.done ? Math.round((100 * (s.onTime || 0)) / s.done) : null;
-    fill(statsEl, 
+    fill(statsEl,
+      h(`span.points-total${(s.points || 0) < 0 ? '.minus' : ''}`, h('b', String(s.points || 0)), ' points'),
       h('span', h('b', String(todayDone)), ' done today'),
       h('span', h('b', String(s.streak || 0)), ' on-time streak'),
       pct == null ? null : h('span', h('b', `${pct}%`), ' on time'));
 
     const counts = profile.badgeCounts || {};
     const owned = profile.milestones || {};
-    fill(badgesEl, 
+    const bad = profile.badBadges || [];
+    fill(badgesEl,
+      bad.length ? h('div.bad-badges',
+        h('h3', 'Late badges'),
+        h('p.hint', `Each one fades a little with every on-time task and disappears after ${B.FADE_AFTER}.`),
+        ...bad.map((b) => {
+          const good = b.good || 0;
+          return h('div.bad-badge', { style: { '--fade': String(1 - good / B.FADE_AFTER) } },
+            h('span.m-emoji', b.emoji),
+            h('div', h('strong', `${b.label}${b.where ? ' · ' + b.where : ''}`),
+              h('small', `${B.FADE_AFTER - good} more on-time task${B.FADE_AFTER - good === 1 ? '' : 's'} to clear`)),
+            h('span.fade-dots', { 'aria-label': `${good} of ${B.FADE_AFTER}` },
+              ...Array.from({ length: B.FADE_AFTER }, (_, i) => h(`span.dot${i < good ? '.on' : ''}`))));
+        })) : null,
       h('div.badge-counts', ...Object.values(B.TASK_BADGES).map((b) =>
         h('div.badge-count', { title: b.desc }, h('span.b-emoji', b.emoji), h('b', String(counts[b.id] || 0)), h('small', b.label)))),
       h('div.milestones', ...B.MILESTONES.map((m) =>
