@@ -94,6 +94,7 @@ async function pushToUsers(uids, msg) {
           badge: '/icons/badge-72.png',
           tag: msg.tag,
           renotify: true,
+          silent: false, // always use the phone's notification sound
           requireInteraction: !!msg.requireInteraction,
           vibrate: msg.vibrate || [200, 100, 200],
         },
