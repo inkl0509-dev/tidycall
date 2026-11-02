@@ -1,7 +1,8 @@
 // Manager screen: send tasks, live board, team, settings.
-import { collection, query, where, onSnapshot, doc, updateDoc, setDoc, serverTimestamp, Timestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import { collection, query, where, onSnapshot, doc, updateDoc, setDoc, addDoc, deleteDoc, serverTimestamp, Timestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { db, api } from './firebase.js';
 import { h, fill, mount, toast, play, soundSettings, ms, clock, duration, timeOfDay, startOfToday, busy, listenError, dialog, confirmBox } from './ui.js';
+import { compressImage, readMapPack, mapView, showOnMap, findPin, putMapInCache } from './maps.js';
 import { pushBanner, refreshPushIfGranted, onForegroundPush, pushState, enablePush } from './push.js';
 
 const B = self.BADGES;
@@ -20,7 +21,10 @@ export function start({ user, logout, brand }) {
   let dayKey = startOfToday().getTime();
 
   // Dispatch form state
-  const pick = { type: null, customType: '', location: '', minutes: null, urgent: false, staffId: null, note: '', replace: null };
+  const pick = { type: null, customType: '', location: '', mapPoint: null, minutes: null, urgent: false, staffIds: [], note: '', replace: null };
+  let maps = [];
+  let mapOpen = false;
+  let mapTab = null;
 
   const params = new URLSearchParams(location.search);
   let tab = params.get('view') === 'board' ? 'board' : (matchMedia('(min-width: 1000px)').matches ? 'board' : 'send');
@@ -72,6 +76,15 @@ export function start({ user, logout, brand }) {
     if (tab === 'settings') renderSettings();
   }, listenError));
 
+  unsubs.push(onSnapshot(collection(db, 'maps'), (snap) => {
+    maps = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (a.order || 0) - (b.order || 0) || a.name.localeCompare(b.name));
+    maps.forEach(putMapInCache);
+    if (pick.location && !pick.mapPoint) pick.mapPoint = findPin(maps, pick.location);
+    renderSend();
+    if (tab === 'settings') renderMapsSettings();
+    renderBoard();
+  }, listenError));
+
   unsubs.push(onSnapshot(collection(db, 'users'), (snap) => {
     users = new Map(snap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
     renderStaffPicks();
@@ -102,7 +115,10 @@ export function start({ user, logout, brand }) {
   // Live updates on the board, no push needed.
   function announce(before, t) {
     if (before.status === t.status) return;
-    if (t.status === 'accepted') { play('accepted'); toast(`${t.staffName} accepted ${t.typeLabel} · ${t.location}`, 'info'); }
+    if (t.status === 'accepted') {
+      play('accepted');
+      toast(t.group ? `${t.staffName} took ${t.typeLabel} · ${t.location} (first of ${(t.staffIds || []).length})` : `${t.staffName} accepted ${t.typeLabel} · ${t.location}`, 'info');
+    }
     if (t.status === 'done') {
       const late = t.badge && t.badge.bad;
       play(late ? 'finishedLate' : 'finished');
@@ -116,7 +132,12 @@ export function start({ user, logout, brand }) {
   }
 
   // ---------- Send task ----------
-  function openCountFor(uid) { let n = 0; openMap.forEach((t) => { if (t.staffId === uid) n++; }); return n; }
+  // Tasks this person has, plus group tasks offered to them that nobody has taken yet.
+  function openCountFor(uid) {
+    let n = 0;
+    openMap.forEach((t) => { if (t.staffId === uid || (!t.staffId && (t.staffIds || []).includes(uid))) n++; });
+    return n;
+  }
 
   function chip(label, selected, onclick, extra = '') {
     return h(`button.chip${selected ? '.on' : ''}${extra}`, { type: 'button', 'aria-pressed': String(!!selected), onclick }, label);
@@ -130,16 +151,26 @@ export function start({ user, logout, brand }) {
     const staff = [...users.values()].filter((u) => u.role === 'staff' && u.active !== false)
       .map((u) => ({ ...u, open: openCountFor(u.id) }))
       .sort((a, b) => a.open - b.open || a.name.localeCompare(b.name));
-    if (pick.staffId && !staff.some((u) => u.id === pick.staffId)) pick.staffId = null;
-    fill(staffBox, staff.length ? h('div.staff-picks', ...staff.map((u) =>
-      h(`button.staff-pick${pick.staffId === u.id ? '.on' : ''}`, {
-        type: 'button', 'aria-pressed': String(pick.staffId === u.id),
-        onclick: () => { pick.staffId = u.id; renderStaffPicks(); },
-      },
-      h('span.avatar', initials(u.name)),
-      h('span.sp-name', u.name),
-      h(`span.sp-load${u.open ? '.busy' : ''}`, u.open ? `${u.open} open` : 'Free'))))
-      : h('p.empty-hint', 'No staff yet. Add people in Team.'));
+    pick.staffIds = pick.staffIds.filter((id) => staff.some((u) => u.id === id));
+    const toggle = (id) => {
+      pick.staffIds = pick.staffIds.includes(id) ? pick.staffIds.filter((x) => x !== id) : [...pick.staffIds, id];
+      renderStaffPicks();
+    };
+    const free = staff.filter((u) => !u.open).map((u) => u.id);
+    fill(staffBox, staff.length ? [
+      h('div.chips.who-quick',
+        chip('Everyone', staff.length > 1 && pick.staffIds.length === staff.length, () => { pick.staffIds = staff.length === pick.staffIds.length ? [] : staff.map((u) => u.id); renderStaffPicks(); }),
+        free.length > 1 ? chip(`Everyone free (${free.length})`, pick.staffIds.length === free.length && free.every((id) => pick.staffIds.includes(id)), () => { pick.staffIds = free; renderStaffPicks(); }) : null,
+        pick.staffIds.length ? chip('Clear', false, () => { pick.staffIds = []; renderStaffPicks(); }) : null),
+      h('div.staff-picks', ...staff.map((u) => {
+        const on = pick.staffIds.includes(u.id);
+        return h(`button.staff-pick${on ? '.on' : ''}`, { type: 'button', 'aria-pressed': String(on), onclick: () => toggle(u.id) },
+          h('span.avatar', on ? '✓' : initials(u.name)),
+          h('span.sp-name', u.name),
+          h(`span.sp-load${u.open ? '.busy' : ''}`, u.open ? `${u.open} open` : 'Free'));
+      })),
+      pick.staffIds.length > 1 ? h('p.hint', `All ${pick.staffIds.length} get the alert. The first to accept takes it; the others see who's on it.`) : null,
+    ] : h('p.empty-hint', 'No staff yet. Add people in Team.'));
     updateSendBtn();
   }
 
@@ -148,7 +179,13 @@ export function start({ user, logout, brand }) {
 
     const locInput = h('input.inline-input', {
       placeholder: 'Or type a place, e.g. Villa 12', value: (config.locations || []).includes(pick.location) ? '' : pick.location,
-      oninput: (e) => { pick.location = e.target.value; updateSendBtn(); },
+      oninput: (e) => {
+        pick.location = e.target.value;
+        // Typed name matches a pinned place → use its pin; otherwise keep a spot tapped on the map.
+        const pin = findPin(maps, pick.location);
+        if (pin) pick.mapPoint = pin; else if (pick.mapPoint && pick.mapPoint.place) pick.mapPoint = null;
+        updateSendBtn();
+      },
       onchange: () => renderSend(),
     });
     const typeInput = h('input.inline-input', {
@@ -158,16 +195,17 @@ export function start({ user, logout, brand }) {
     });
     const sendBtn = h('button.btn.big.wide.send-btn', { type: 'button', onclick: (e) => send(e.currentTarget) });
     updateSendBtn = () => {
-      const ok = (pick.customType.trim() || pick.type) && pick.location.trim() && pick.staffId && pick.minutes;
-      const chosen = pick.staffId && users.get(pick.staffId);
+      const ok = (pick.customType.trim() || pick.type) && pick.location.trim() && pick.staffIds.length && pick.minutes;
+      const n = pick.staffIds.length;
+      const one = n === 1 && users.get(pick.staffIds[0]);
       sendBtn.disabled = !ok;
-      sendBtn.textContent = chosen ? `Send to ${chosen.name}` : 'Choose who to send it to';
+      sendBtn.textContent = !n ? 'Choose who to send it to' : one ? `Send to ${one.name}` : `Send to ${n} people`;
     };
 
     fill(sendPanel, 
       h('h2.panel-title', pick.replace ? 'Reassign task' : 'Send a task'),
       pick.replace ? h('div.reassign-note',
-        h('span', `Replacing the task given to ${pick.replace.staffName}. The old one closes when you send.`),
+        h('span', `Replacing the task given to ${pick.replace.staffName || (pick.replace.staffNames || []).join(', ')}. The old one closes when you send.`),
         h('button.btn.ghost.small', { type: 'button', onclick: () => { resetPick(); renderSend(); } }, 'Stop reassigning')) : null,
 
       h('fieldset.step', h('legend', 'What needs doing'),
@@ -177,8 +215,11 @@ export function start({ user, logout, brand }) {
         typeInput),
 
       h('fieldset.step', h('legend', 'Where'),
-        h('div.chips', ...(config.locations || []).map((l) => chip(l, pick.location === l, () => { pick.location = l; renderSend(); }))),
-        locInput),
+        h('div.chips', ...(config.locations || []).map((l) => chip(`${findPin(maps, l) ? '📍 ' : ''}${l}`, pick.location === l, () => {
+          pick.location = l; pick.mapPoint = findPin(maps, l); renderSend();
+        }))),
+        locInput,
+        mapPicker()),
 
       h('fieldset.step', h('legend', 'Time to finish'),
         h('div.chips', ...TIMES.map((m) => chip(`${m} min`, pick.minutes === m, () => { pick.minutes = m; renderSend(); }))),
@@ -196,7 +237,38 @@ export function start({ user, logout, brand }) {
   }
 
   function resetPick() {
-    Object.assign(pick, { type: null, customType: '', location: '', urgent: false, staffId: null, note: '', replace: null, minutes: config.defaultMinutes || 10 });
+    Object.assign(pick, { type: null, customType: '', location: '', mapPoint: null, urgent: false, staffIds: [], note: '', replace: null, minutes: config.defaultMinutes || 10 });
+  }
+
+  // Map under "Where": tap a pinned place to pick it, or tap anywhere to mark the exact spot.
+  function mapPicker() {
+    if (!maps.length) return null;
+    const current = maps.find((m) => m.id === (pick.mapPoint ? pick.mapPoint.mapId : mapTab)) || maps[0];
+    const status = pick.mapPoint
+      ? h('p.map-status', `📍 Marked on ${pick.mapPoint.mapName || 'the map'}`, h('button.btn.ghost.small', { type: 'button', onclick: () => { pick.mapPoint = null; renderSend(); } }, 'Remove pin'))
+      : h('p.map-status.muted', 'No spot marked on the map.');
+    if (!mapOpen) {
+      return h('div.map-picker', status,
+        h('button.btn.ghost.small', { type: 'button', onclick: () => { mapOpen = true; renderSend(); } }, pick.mapPoint ? 'Show map' : 'Pick on map'));
+    }
+    return h('div.map-picker.open', status,
+      maps.length > 1 ? h('div.chips', ...maps.map((m) => chip(m.name, m.id === current.id, () => { mapTab = m.id; if (pick.mapPoint && pick.mapPoint.mapId !== m.id) pick.mapPoint = null; renderSend(); }))) : null,
+      h('p.hint', 'Tap a pinned place, or tap anywhere to mark the exact spot.'),
+      mapView(current, {
+        pins: current.pins || [], pan: true,
+        selected: pick.location,
+        marker: pick.mapPoint && pick.mapPoint.mapId === current.id ? pick.mapPoint : null,
+        onTap: (x, y, place) => {
+          mapTab = current.id;
+          if (place) { pick.location = place; pick.mapPoint = { mapId: current.id, mapName: current.name, x, y, place }; }
+          else {
+            pick.mapPoint = { mapId: current.id, mapName: current.name, x, y };
+            if (!pick.location.trim()) pick.location = `Marked spot · ${current.name}`;
+          }
+          renderSend();
+        },
+      }),
+      h('button.btn.ghost.small', { type: 'button', onclick: () => { mapOpen = false; renderSend(); } }, 'Hide map'));
   }
 
   async function send(btn) {
@@ -204,12 +276,13 @@ export function start({ user, logout, brand }) {
     await busy(btn, async () => {
       try {
         const r = await api('assign', {
-          staffId: pick.staffId, typeLabel: type.label, typeEmoji: type.emoji || '', location: pick.location.trim(),
+          staffIds: pick.staffIds, mapPoint: pick.mapPoint, typeLabel: type.label, typeEmoji: type.emoji || '', location: pick.location.trim(),
           note: pick.note.trim(), minutes: pick.minutes, priority: pick.urgent ? 'urgent' : 'normal',
           replaceTaskId: pick.replace ? pick.replace.id : undefined,
         });
-        if (r.pushSent > 0) toast(`Sent to ${r.staffName}. Their phone was notified.`, 'ok');
+        if (r.pushSent > 0) toast(r.group ? `Sent to ${r.staffName}. The first to accept takes it.` : `Sent to ${r.staffName}. Their phone was notified.`, 'ok');
         else toast(`Sent to ${r.staffName}, but no phone was notified: they need to turn on notifications. The task is on their screen when they open the app.`, 'warn', 9000);
+        mapOpen = false;
         play('sent');
         resetPick(); renderSend();
         if (!matchMedia('(min-width: 1000px)').matches) setTab('board');
@@ -266,8 +339,12 @@ export function start({ user, logout, brand }) {
         h('div.row-title', h('span', `${t.typeEmoji || ''} ${t.typeLabel}`.trim()), t.priority === 'urgent' ? h('span.pill.pill-urgent', 'Urgent') : null),
         h('div.row-where', t.location),
         h('div.row-meta',
-          h('span.avatar.small', initials(t.staffName)), h('span', t.staffName),
-          h(`span.status.s-${t.status}`, statusText),
+          ...(t.staffId
+            ? [h('span.avatar.small', initials(t.staffName)), h('span', t.staffName)]
+            : [h('span.avatar.small', '👥'), h('span', { title: (t.staffNames || []).join(', ') }, `Sent to ${(t.staffNames || []).length}: ${(t.staffNames || []).slice(0, 3).join(', ')}${(t.staffNames || []).length > 3 ? '…' : ''}`)]),
+          h(`span.status.s-${t.status}`, !t.staffId && isOpen ? 'Waiting for someone' : statusText),
+          t.group && t.staffId ? h('span.muted', `first of ${(t.staffIds || []).length}`) : null,
+          t.mapPoint ? h('button.map-link', { type: 'button', onclick: () => openTaskMap(t) }, '📍 Map') : null,
           h('span.muted', isOpen ? `sent ${timeOfDay(t.createdAt)}` : `done ${timeOfDay(t.doneAt)}`),
           isOpen && t.pushDevices === 0 ? h('span.warn-note', { title: 'Their phone has notifications off' }, 'phone not notified') : null,
           t.reminders ? h('span.remind-note', { title: 'Reminders sent to their phone' }, `🔔 reminded ${t.reminders}×`) : null),
@@ -310,8 +387,13 @@ export function start({ user, logout, brand }) {
     if (flipped) renderBoard();
   }
 
+  function openTaskMap(t) {
+    const m = maps.find((x) => x.id === t.mapPoint.mapId);
+    if (m) showOnMap(m, t.mapPoint, t.location); else toast('That map was deleted.', 'warn');
+  }
+
   async function cancelTask(t) {
-    const ok = await confirmBox('Cancel task?', `${t.typeLabel} · ${t.location} for ${t.staffName}. It disappears from their screen.`, 'Cancel task', true);
+    const ok = await confirmBox('Cancel task?', `${t.typeLabel} · ${t.location} for ${t.staffName || (t.staffNames || []).join(', ')}. It disappears from their screen.`, 'Cancel task', true);
     if (!ok) return;
     try {
       await updateDoc(doc(db, 'tasks', t.id), { status: 'cancelled', open: false, cancelledAt: serverTimestamp(), cancelledBy: me });
@@ -323,7 +405,8 @@ export function start({ user, logout, brand }) {
     resetPick();
     const known = (config.taskTypes || []).find((x) => x.label === t.typeLabel);
     if (known) pick.type = known; else pick.customType = t.typeLabel;
-    Object.assign(pick, { location: t.location, minutes: t.minutes, urgent: t.priority === 'urgent', note: t.note || '', replace: t });
+    Object.assign(pick, { location: t.location, mapPoint: t.mapPoint || null, minutes: t.minutes, urgent: t.priority === 'urgent', note: t.note || '', replace: t,
+      staffIds: t.staffId ? [] : [...(t.staffIds || [])] });
     setTab('send');
     renderSend();
     sendPanel.scrollIntoView({ behavior: 'smooth' });
@@ -419,6 +502,97 @@ export function start({ user, logout, brand }) {
     });
   }
 
+  // ---------- Maps (in Settings) ----------
+  const mapsBox = h('fieldset.step.maps-box');
+  let editingMap = null; // { id, name, image, width, height, pins } being edited
+  let pinPlace = '';
+
+  function renderMapsSettings() {
+    const locations = config.locations || [];
+    if (editingMap) {
+      const m = editingMap;
+      const pinned = new Set((m.pins || []).map((p) => p.place));
+      const unpinned = locations.filter((l) => !pinned.has(l));
+      if (!pinPlace) pinPlace = unpinned[0] || '';
+      const placeSel = h('select', { 'aria-label': 'Place to pin', onchange: (e) => { pinPlace = e.target.value; } },
+        h('option', { value: '' }, 'Choose a place…'),
+        ...locations.map((l) => h('option', { value: l, selected: l === pinPlace }, `${pinned.has(l) ? '📍 ' : ''}${l}`)));
+      fill(mapsBox,
+        h('legend', `Edit map: ${m.name}`),
+        h('label', 'Map name', h('input', { value: m.name, maxLength: 40, oninput: (e) => { m.name = e.target.value; } })),
+        h('p.hint', 'Choose a place, then tap where it is on the map. Tapping again moves the pin. Places come from the Places list above.'),
+        h('div.add-row', placeSel),
+        h('small', 'Pin names show on this screen only; staff see the plan with one big pin.'),
+        mapView(m, {
+          pins: m.pins || [], selected: pinPlace, labels: 'all', pan: true,
+          onTap: (x, y, place) => {
+            if (place) { pinPlace = place; renderMapsSettings(); return; }
+            if (!pinPlace) { toast('Choose a place first, then tap the map.', 'warn'); return; }
+            m.pins = (m.pins || []).filter((p) => p.place !== pinPlace).concat([{ place: pinPlace, x, y }]);
+            const next = locations.find((l) => !m.pins.some((p) => p.place === l));
+            pinPlace = next || pinPlace;
+            renderMapsSettings();
+          },
+        }),
+        (m.pins || []).length ? h('div.chips', ...(m.pins || []).map((p) => h('span.chip.removable', `📍 ${p.place}`,
+          h('button.icon-btn', { type: 'button', 'aria-label': `Remove pin ${p.place}`, onclick: () => { m.pins = m.pins.filter((x) => x !== p); renderMapsSettings(); } }, '✕')))) : null,
+        h('div.row-start',
+          h('button.btn', { type: 'button', onclick: (e) => busy(e.currentTarget, async () => {
+            if (!m.name.trim()) { toast('Give the map a name.', 'warn'); return; }
+            const data = { name: m.name.trim(), image: m.image, width: m.width, height: m.height, pins: m.pins || [], order: m.order || 0, updatedAt: serverTimestamp() };
+            try {
+              if (m.id) await setDoc(doc(db, 'maps', m.id), data);
+              else await addDoc(collection(db, 'maps'), data);
+              // Pinned places that aren't in the Places list yet are added to it.
+              const missing = [...new Set((m.pins || []).map((p) => p.place))].filter((pl) => !locations.includes(pl));
+              if (missing.length) await setDoc(doc(db, 'config', 'app'), { locations: [...locations, ...missing] }, { merge: true });
+              toast(missing.length ? `Map saved. ${missing.length} new place${missing.length > 1 ? 's' : ''} added to Places.` : 'Map saved.', 'ok'); editingMap = null; pinPlace = ''; renderMapsSettings();
+            } catch (ex) { toast(`Could not save the map: ${ex.message}`, 'error', 9000); }
+          }) }, 'Save map'),
+          h('button.btn.ghost', { type: 'button', onclick: () => { editingMap = null; pinPlace = ''; renderMapsSettings(); } }, 'Cancel'),
+          m.id ? h('button.btn.ghost.danger-text', { type: 'button', onclick: async () => {
+            if (!(await confirmBox(`Delete ${m.name}?`, 'Its pins are removed too. Tasks already sent keep their place name.', 'Delete map', true))) return;
+            try { await deleteDoc(doc(db, 'maps', m.id)); editingMap = null; toast('Map deleted.', 'info'); renderMapsSettings(); }
+            catch (ex) { toast(ex.message, 'error'); }
+          } }, 'Delete map') : null));
+      return;
+    }
+
+    const fileIn = h('input', { type: 'file', accept: 'image/*', hidden: true, onchange: async (e) => {
+      const f = e.target.files[0]; e.target.value = '';
+      if (!f) return;
+      try {
+        toast('Preparing the map…', 'info', 2500);
+        const img = await compressImage(f);
+        editingMap = { name: f.name.replace(/\.[^.]+$/, '').slice(0, 40) || 'Ground floor', pins: [], order: maps.length, ...img };
+        pinPlace = '';
+        renderMapsSettings();
+      } catch (ex) { toast(ex.message, 'error', 8000); }
+    } });
+    const packIn = h('input', { type: 'file', accept: '.json,application/json', hidden: true, onchange: async (e) => {
+      const f = e.target.files[0]; e.target.value = '';
+      if (!f) return;
+      try {
+        const pack = await readMapPack(f);
+        editingMap = { ...pack, order: maps.length };
+        pinPlace = '';
+        toast(`Loaded "${pack.name}" with ${pack.pins.length} pins. Check them, then tap Save map.`, 'info', 7000);
+        renderMapsSettings();
+      } catch (ex) { toast(ex.message, 'error', 8000); }
+    } });
+    fill(mapsBox,
+      h('legend', 'In-house maps'),
+      h('p.hint', 'Upload a floor plan or site map (photo, scan or screenshot) and pin your places on it. Staff then see exactly where to go.'),
+      maps.length ? h('div.map-list', ...maps.map((m) => h('div.map-item',
+        h('img', { src: m.image, alt: '' }),
+        h('div', h('strong', m.name), h('small', `${(m.pins || []).length} pinned place${(m.pins || []).length === 1 ? '' : 's'}`)),
+        h('button.btn.ghost.small', { type: 'button', onclick: () => { editingMap = JSON.parse(JSON.stringify(m)); pinPlace = ''; renderMapsSettings(); } }, 'Edit pins')))) : null,
+      fileIn, packIn,
+      h('div.row-start',
+        h('button.btn.ghost', { type: 'button', onclick: () => fileIn.click() }, maps.length ? 'Add another map' : 'Upload a map'),
+        h('button.btn.ghost', { type: 'button', onclick: () => packIn.click() }, 'Import map file (.json)')));
+  }
+
   // ---------- Settings ----------
   function renderSettings() {
     const draft = {
@@ -448,6 +622,7 @@ export function start({ user, logout, brand }) {
     const minutesSel = h('select', { onchange: (e) => { draft.defaultMinutes = +e.target.value; } },
       ...TIMES.map((m) => h('option', { value: m, selected: m === draft.defaultMinutes }, `${m} minutes`)));
 
+    renderMapsSettings();
     const pushStatus = h('p', pushState() === 'granted' ? 'On for this device.' : pushState() === 'denied' ? 'Blocked on this device. Allow it in the browser or phone settings.' : 'Off for this device.');
 
     fill(settingsPanel, 
@@ -459,6 +634,7 @@ export function start({ user, logout, brand }) {
         try { await setDoc(doc(db, 'config', 'app'), draft); toast('Settings saved.', 'ok'); }
         catch (ex) { toast(`Could not save: ${ex.message}`, 'error'); }
       }) }, 'Save settings'),
+      mapsBox,
       h('fieldset.step', h('legend', 'Sounds on this device'), soundSettings('manager')),
       h('fieldset.step', h('legend', 'Notifications on this device'), pushStatus,
         h('div.row-start',
