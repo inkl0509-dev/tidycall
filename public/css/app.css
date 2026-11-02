@@ -196,7 +196,7 @@ label small { font-weight: 400; }
 .all-clear h2 { font-size: 2rem; font-weight: 800; margin: 6px 0; }
 .all-clear p { color: var(--muted); }
 
-.badge-counts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.badge-counts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .badge-count { background: var(--surface); border-radius: var(--radius-m); padding: 12px 6px; display: grid; justify-items: center; gap: 2px; text-align: center; }
 .b-emoji { font-size: 1.6rem; }
 .badge-count b { font-family: var(--display); font-size: 1.3rem; }
@@ -216,6 +216,31 @@ label small { font-weight: 400; }
 .new-milestones { width: 100%; display: grid; gap: 8px; text-align: left; }
 .new-milestones .milestone { background: var(--frond-soft); }
 .strong { font-weight: 700; }
+
+/* Points & late badges */
+.points-total b { color: var(--lagoon); }
+.points-total.minus b, .row-points.minus, .points-delta.minus { color: var(--hibiscus); }
+.points-delta { font-family: var(--display); font-weight: 800; font-size: 1.4rem; color: var(--frond); }
+.row-points { font-weight: 700; color: var(--frond); }
+.fade-hint { color: var(--muted); }
+.celebrate.is-bad .badge-burst { animation: sink 0.6s ease-out; }
+@keyframes sink { from { transform: translateY(-16px); opacity: 0; } to { transform: none; opacity: 1; } }
+.cleared-note { display: flex; gap: 0.5rem; align-items: center; background: var(--frond-soft); color: var(--frond); font-weight: 700; border-radius: var(--radius-m); padding: 10px 14px; text-align: left; }
+.bad-badges { display: grid; gap: 8px; margin-bottom: 14px; }
+.bad-badges h3 { font-family: var(--body); font-size: 1rem; font-weight: 700; color: var(--hibiscus); }
+.bad-badge {
+  --fade: 1;
+  display: flex; align-items: center; gap: 0.7rem; padding: 10px 12px; border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--hibiscus-soft) calc(var(--fade) * 100%), var(--surface));
+}
+.bad-badge .m-emoji { opacity: calc(0.25 + var(--fade) * 0.75); filter: grayscale(calc(1 - var(--fade))); }
+.bad-badge div { display: grid; line-height: 1.25; flex: 1; min-width: 0; }
+.bad-badge strong { font-size: 0.92rem; }
+.fade-dots { display: flex; gap: 4px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--line); }
+.dot.on { background: var(--frond); box-shadow: none; }
+.mini-badge.bad { --fade: 1; background: color-mix(in srgb, var(--hibiscus-soft) calc(var(--fade) * 100%), var(--surface-2)); opacity: calc(0.45 + var(--fade) * 0.55); }
+.remind-note { color: var(--sun); font-weight: 600; font-size: 0.8rem; }
 
 /* ---------- Manager ---------- */
 .tabs { display: flex; gap: 4px; }
@@ -384,7 +409,6 @@ dialog.sheet::backdrop { background: rgb(8 30 33 / 0.45); }
   #toasts { bottom: 24px; left: auto; right: 24px; transform: none; }
 }
 @media (max-width: 420px) {
-  .badge-counts { grid-template-columns: repeat(2, 1fr); }
   .push-banner { flex-direction: column; align-items: stretch; }
 }
 @media (prefers-reduced-motion: reduce) {
