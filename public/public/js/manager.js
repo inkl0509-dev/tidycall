@@ -86,7 +86,15 @@ export function start({ user, logout, brand }) {
   }, listenError));
 
   unsubs.push(onSnapshot(collection(db, 'users'), (snap) => {
+    const prev = users;
     users = new Map(snap.docs.map((d) => [d.id, { id: d.id, ...d.data() }]));
+    if (prev.size) users.forEach((u) => {
+      const before = prev.get(u.id);
+      if (u.role !== 'staff' || !before || !!before.onDuty === !!u.onDuty) return;
+      play('accepted');
+      toast(u.onDuty ? `🟢 ${u.name} carded in` : `⚪ ${u.name} carded out`, 'info');
+    });
+    renderBoardDuty();
     renderStaffPicks();
     if (tab === 'team') renderTeam();
   }, listenError));
@@ -103,6 +111,21 @@ export function start({ user, logout, brand }) {
       renderBoard(); renderStaffPicks();
     }, listenError);
   }
+  let shiftsToday = [];
+  let unsubShifts = watchShifts();
+  function watchShifts() {
+    return onSnapshot(query(collection(db, 'shifts'), where('in', '>=', Timestamp.fromDate(startOfToday()))), (snap) => {
+      shiftsToday = snap.docs.map((d) => d.data());
+      if (tab === 'team') renderTeam();
+    }, listenError);
+  }
+  function minutesToday(u) {
+    let m = 0;
+    shiftsToday.filter((x) => x.uid === u.id).forEach((x) => { m += x.out ? (x.minutes || 0) : Math.round((Date.now() - ms(x.in)) / 60000); });
+    return m;
+  }
+  const hm = (m) => `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`;
+
   let unsubToday = watchTasks(query(collection(db, 'tasks'), where('createdAt', '>=', Timestamp.fromDate(startOfToday()))), todayMap, 'today');
   unsubs.push(watchTasks(query(collection(db, 'tasks'), where('open', '==', true)), openMap, 'open'));
 
@@ -147,6 +170,7 @@ export function start({ user, logout, brand }) {
   let updateSendBtn = () => {};
 
   // Only the "Who" list refreshes on live data, so typing in the form is never interrupted.
+  let showOffDuty = false;
   function renderStaffPicks() {
     const staff = [...users.values()].filter((u) => u.role === 'staff' && u.active !== false)
       .map((u) => ({ ...u, open: openCountFor(u.id) }))
@@ -156,19 +180,33 @@ export function start({ user, logout, brand }) {
       pick.staffIds = pick.staffIds.includes(id) ? pick.staffIds.filter((x) => x !== id) : [...pick.staffIds, id];
       renderStaffPicks();
     };
-    const free = staff.filter((u) => !u.open).map((u) => u.id);
+    const onDuty = staff.filter((u) => u.onDuty);
+    const offDuty = staff.filter((u) => !u.onDuty);
+    const dutyIds = onDuty.map((u) => u.id);
+    const free = onDuty.filter((u) => !u.open).map((u) => u.id);
+    const same = (ids) => ids.length && pick.staffIds.length === ids.length && ids.every((id) => pick.staffIds.includes(id));
+    const card = (u) => {
+      const on = pick.staffIds.includes(u.id);
+      return h(`button.staff-pick${on ? '.on' : ''}${u.onDuty ? '' : '.off-duty'}`, { type: 'button', 'aria-pressed': String(on), onclick: () => toggle(u.id) },
+        h('span.avatar', on ? '✓' : initials(u.name)),
+        h('span.sp-name', u.name),
+        u.onDuty
+          ? h(`span.sp-load${u.open ? '.busy' : ''}`, u.open ? `${u.open} open` : 'Free')
+          : h('span.sp-load.off', 'Off duty'));
+    };
+    // Off-duty people stay visible if they're already picked (e.g. reassigning).
+    const offShown = showOffDuty ? offDuty : offDuty.filter((u) => pick.staffIds.includes(u.id));
     fill(staffBox, staff.length ? [
       h('div.chips.who-quick',
-        chip('Everyone', staff.length > 1 && pick.staffIds.length === staff.length, () => { pick.staffIds = staff.length === pick.staffIds.length ? [] : staff.map((u) => u.id); renderStaffPicks(); }),
-        free.length > 1 ? chip(`Everyone free (${free.length})`, pick.staffIds.length === free.length && free.every((id) => pick.staffIds.includes(id)), () => { pick.staffIds = free; renderStaffPicks(); }) : null,
+        onDuty.length > 1 ? chip(`Everyone on duty (${onDuty.length})`, same(dutyIds), () => { pick.staffIds = same(dutyIds) ? [] : dutyIds; renderStaffPicks(); }) : null,
+        free.length > 1 && free.length < onDuty.length ? chip(`Free (${free.length})`, same(free), () => { pick.staffIds = free; renderStaffPicks(); }) : null,
         pick.staffIds.length ? chip('Clear', false, () => { pick.staffIds = []; renderStaffPicks(); }) : null),
-      h('div.staff-picks', ...staff.map((u) => {
-        const on = pick.staffIds.includes(u.id);
-        return h(`button.staff-pick${on ? '.on' : ''}`, { type: 'button', 'aria-pressed': String(on), onclick: () => toggle(u.id) },
-          h('span.avatar', on ? '✓' : initials(u.name)),
-          h('span.sp-name', u.name),
-          h(`span.sp-load${u.open ? '.busy' : ''}`, u.open ? `${u.open} open` : 'Free'));
-      })),
+      onDuty.length
+        ? h('div.staff-picks', ...onDuty.map(card))
+        : h('p.empty-hint', 'Nobody is on duty right now. Staff tap "Card in" on their phone when they start work.'),
+      offShown.length ? h('div.staff-picks.off-list', ...offShown.map(card)) : null,
+      offDuty.length ? h('button.link-btn', { type: 'button', onclick: () => { showOffDuty = !showOffDuty; renderStaffPicks(); } },
+        showOffDuty ? 'Hide off-duty staff' : `Show off-duty staff (${offDuty.length})`) : null,
       pick.staffIds.length > 1 ? h('p.hint', `All ${pick.staffIds.length} get the alert. The first to accept takes it; the others see who's on it.`) : null,
     ] : h('p.empty-hint', 'No staff yet. Add people in Team.'));
     updateSendBtn();
@@ -273,10 +311,17 @@ export function start({ user, logout, brand }) {
 
   async function send(btn) {
     const type = pick.customType.trim() ? { label: pick.customType.trim(), emoji: '📌' } : pick.type;
+    const offDuty = pick.staffIds.map((id) => users.get(id)).filter((u) => u && !u.onDuty);
+    if (offDuty.length) {
+      const names = offDuty.map((u) => u.name).join(', ');
+      const ok = await confirmBox(offDuty.length > 1 ? 'Some people are off duty' : `${names} is off duty`,
+        `${names} ${offDuty.length > 1 ? "haven't" : "hasn't"} carded in. Send anyway?`, 'Send anyway', false, 'Go back');
+      if (!ok) return;
+    }
     await busy(btn, async () => {
       try {
         const r = await api('assign', {
-          staffIds: pick.staffIds, mapPoint: pick.mapPoint, typeLabel: type.label, typeEmoji: type.emoji || '', location: pick.location.trim(),
+          staffIds: pick.staffIds, staffId: pick.staffIds[0], mapPoint: pick.mapPoint, typeLabel: type.label, typeEmoji: type.emoji || '', location: pick.location.trim(),
           note: pick.note.trim(), minutes: pick.minutes, priority: pick.urgent ? 'urgent' : 'normal',
           replaceTaskId: pick.replace ? pick.replace.id : undefined,
         });
@@ -306,6 +351,7 @@ export function start({ user, logout, brand }) {
       h('div.board-head',
         h('h2.panel-title', 'Live board'),
         h('div.kpis',
+          kpi([...users.values()].filter((u) => u.role === 'staff' && u.onDuty).length, 'on duty'),
           kpi(open.length, 'open'),
           kpi(overdue.length, 'overdue', overdue.length ? 'bad' : ''),
           kpi(done.length, 'done today'),
@@ -315,6 +361,12 @@ export function start({ user, logout, brand }) {
       section('In progress', active, 'active', 'Nothing in progress. Send a task to get started.'),
       section('Finished today', done, 'done', 'Finished tasks show up here as soon as staff tap Done.'));
     tickBoard();
+  }
+
+  // Update just the "on duty" number when someone cards in/out.
+  function renderBoardDuty() {
+    const el = boardPanel.querySelector('.kpi b');
+    if (el) el.textContent = String([...users.values()].filter((u) => u.role === 'staff' && u.onDuty).length);
   }
 
   function kpi(v, label, cls = '') { return h(`div.kpi${cls ? '.' + cls : ''}`, h('b', String(v)), h('small', label)); }
@@ -416,10 +468,21 @@ export function start({ user, logout, brand }) {
   function renderTeam() {
     // Staff first, highest points on top; managers at the end.
     const pts = (u) => (u.stats && u.stats.points) || 0;
-    const list = [...users.values()].sort((a, b) => (a.role === b.role ? 0 : a.role === 'manager' ? 1 : -1) || (b.active !== false) - (a.active !== false) || pts(b) - pts(a) || a.name.localeCompare(b.name));
+    const list = [...users.values()].sort((a, b) => (a.role === b.role ? 0 : a.role === 'manager' ? 1 : -1) || (b.active !== false) - (a.active !== false) || (!!b.onDuty - !!a.onDuty) || pts(b) - pts(a) || a.name.localeCompare(b.name));
     fill(teamPanel, 
       h('div.panel-head', h('h2.panel-title', 'Team'), h('button.btn', { type: 'button', onclick: addPerson }, 'Add person')),
       h('div.team-list', ...list.map(person)));
+  }
+
+  async function setDuty(u, btn) {
+    const out = !!u.onDuty;
+    if (!(await confirmBox(out ? `Card out ${u.name}?` : `Card in ${u.name}?`,
+      out ? 'Use this if they forgot to card out. Their shift ends now.' : 'Use this if they forgot to card in. Their shift starts now.',
+      out ? 'Card out' : 'Card in', false, 'Cancel'))) return;
+    await busy(btn, async () => {
+      try { await api('duty', { action: out ? 'out' : 'in', uid: u.id }); }
+      catch (e) { toast(e.message, 'error'); }
+    });
   }
 
   function person(u) {
@@ -429,14 +492,16 @@ export function start({ user, logout, brand }) {
     const counts = u.badgeCounts || {};
     return h(`article.person${u.active === false ? '.inactive' : ''}`,
       h('div.person-id',
-        h('span.avatar', initials(u.name)),
-        h('div', h('strong', u.name), h('small', `@${u.username} · ${u.role === 'manager' ? 'Manager' : 'Staff'}${u.active === false ? ' · switched off' : ''}`))),
+        h(`span.avatar${u.role === 'staff' && u.onDuty ? '.on-duty' : ''}`, initials(u.name)),
+        h('div', h('strong', u.name, u.role === 'staff' ? h(`span.duty-pill${u.onDuty ? '.on' : ''}`, u.onDuty ? `On duty · since ${timeOfDay(u.dutySince)}` : 'Off duty') : null),
+          h('small', `@${u.username} · ${u.role === 'manager' ? 'Manager' : 'Staff'}${u.active === false ? ' · switched off' : ''}`))),
       u.role === 'staff' ? h('div.person-stats',
         h(`span.points-total${(s.points || 0) < 0 ? '.minus' : ''}`, h('b', String(s.points || 0)), ' points'),
         h('span', h('b', String(s.done || 0)), ' done'),
         h('span', h('b', pct), ' on time'),
         h('span', h('b', String(s.bestStreak || 0)), ' best streak'),
-        h('span', h('b', String(openCountFor(u.id))), ' open now')) : null,
+        h('span', h('b', String(openCountFor(u.id))), ' open now'),
+        h('span', h('b', hm(minutesToday(u))), ' on duty today')) : null,
       u.role === 'staff' ? h('div.person-badges',
         ...Object.values(B.TASK_BADGES).filter((b) => counts[b.id]).map((b) => h('span.mini-badge', { title: b.label }, `${b.emoji} ${counts[b.id]}`)),
         ...owned.map((m) => h('span.mini-badge.ms', { title: `${m.label}: ${m.desc}` }, m.emoji)),
@@ -446,6 +511,7 @@ export function start({ user, logout, brand }) {
         }, `${b.emoji} ${b.good || 0}/${B.FADE_AFTER}`))) : null,
       h('div.person-actions',
         h('button.btn.ghost.small', { type: 'button', onclick: () => resetPin(u) }, 'Reset PIN'),
+        u.role === 'staff' && u.active !== false ? h('button.btn.ghost.small', { type: 'button', onclick: (e) => setDuty(u, e.currentTarget) }, u.onDuty ? 'Card out' : 'Card in') : null,
         u.id === me ? null : h('button.btn.ghost.small', { type: 'button', onclick: (e) => setActive(u, e.currentTarget) }, u.active === false ? 'Switch on' : 'Switch off')));
   }
 
@@ -656,12 +722,13 @@ export function start({ user, logout, brand }) {
     const k = startOfToday().getTime();
     if (k !== dayKey) {
       dayKey = k; unsubToday(); todayMap.clear(); ready.today = false;
+      unsubShifts(); unsubShifts = watchShifts();
       unsubToday = watchTasks(query(collection(db, 'tasks'), where('createdAt', '>=', Timestamp.fromDate(startOfToday()))), todayMap, 'today');
     }
   }, 1000);
 
   renderSend(); renderBoard();
-  return () => { unsubs.forEach((u) => u()); unsubToday(); clearInterval(timer); };
+  return () => { unsubs.forEach((u) => u()); unsubToday(); unsubShifts(); clearInterval(timer); };
 }
 
 function initials(name) {

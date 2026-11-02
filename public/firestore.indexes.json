@@ -1,0 +1,13 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "tasks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "staffIds", "arrayConfig": "CONTAINS" },
+        { "fieldPath": "open", "order": "ASCENDING" }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}

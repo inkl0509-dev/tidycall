@@ -228,11 +228,11 @@ export function dialog(title, build) {
   });
 }
 
-export function confirmBox(title, text, okLabel = 'Confirm', danger = false) {
+export function confirmBox(title, text, okLabel = 'Confirm', danger = false, cancelLabel = 'Keep it') {
   return dialog(title, (close) => h('div.sheet-body',
     h('p', text),
     h('div.row-end',
-      h('button.btn.ghost', { type: 'button', onclick: () => close(false) }, 'Keep it'),
+      h('button.btn.ghost', { type: 'button', onclick: () => close(false) }, cancelLabel),
       h(`button.btn${danger ? '.danger' : ''}`, { type: 'button', onclick: () => close(true) }, okLabel))
   ));
 }

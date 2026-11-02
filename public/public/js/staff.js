@@ -2,7 +2,7 @@
 import { collection, query, where, onSnapshot, doc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { db, api } from './firebase.js';
 import { getMap, mapThumb } from './maps.js';
-import { h, fill, mount, toast, play, ms, clock, duration, busy, listenError, dialog, soundSettings } from './ui.js';
+import { h, fill, mount, toast, play, ms, clock, duration, timeOfDay, busy, listenError, dialog, confirmBox, soundSettings } from './ui.js';
 import { pushBanner, refreshPushIfGranted, onForegroundPush } from './push.js';
 
 const B = self.BADGES;
@@ -23,6 +23,7 @@ export function start({ user, logout, brand }) {
   const owner = (t) => (t.staffId === uid ? 'mine' : !t.staffId ? 'offered' : 'taken');
   const badgesEl = h('section.my-badges');
   const statsEl = h('div.stat-line');
+  const dutyEl = h('section.duty-bar');
   const banner = pushBanner('staff', 'So you hear about new tasks even when this app is closed.');
 
   const screen = h('div.shell.staff',
@@ -34,6 +35,7 @@ export function start({ user, logout, brand }) {
         h('button.btn.ghost.small', { type: 'button', onclick: logout }, 'Sign out'))),
     h('main.staff-main',
       banner,
+      dutyEl,
       statsEl,
       list,
       takenEl,
@@ -76,7 +78,7 @@ export function start({ user, logout, brand }) {
     renderTasks();
   }, listenError);
 
-  const unsubMe = onSnapshot(doc(db, 'users', uid), (d) => { profile = d.data() || {}; renderBadges(); }, listenError);
+  const unsubMe = onSnapshot(doc(db, 'users', uid), (d) => { profile = d.data() || {}; renderBadges(); renderDuty(); }, listenError);
 
   function newTaskAlert(t) {
     play(t.priority === 'urgent' ? 'urgentTask' : 'newTask');
@@ -190,7 +192,50 @@ export function start({ user, logout, brand }) {
       if (now - at < 90000) fire(); // don't replay old alerts when the app is reopened later
     }
   }
-  const timer = setInterval(tick, 1000);
+  const timer = setInterval(() => { tick(); dutyTick(); }, 1000);
+
+  // ---- Card in / card out ----
+  function renderDuty() {
+    if (!profile) return;
+    if (profile.onDuty) {
+      fill(dutyEl,
+        h('span.duty-dot', { 'aria-hidden': 'true' }),
+        h('div.duty-text', h('strong', 'On duty'), h('small.duty-since', '')),
+        h('button.btn.ghost.small.duty-btn', { type: 'button', onclick: (e) => cardOut(e.currentTarget) }, 'Card out'));
+    } else {
+      fill(dutyEl,
+        h('div.duty-text', h('strong', "You're off duty"), h('small', 'Card in when you start work so your manager can send you tasks.')),
+        h('button.btn.big.duty-btn', { type: 'button', onclick: (e) => cardIn(e.currentTarget) }, 'Card in'));
+    }
+    dutyEl.className = `duty-bar ${profile.onDuty ? 'on' : 'off'}`;
+    dutyTick();
+  }
+  function dutyTick() {
+    const el = dutyEl.querySelector('.duty-since');
+    if (!el || !profile || !profile.dutySince) return;
+    const mins = Math.floor((Date.now() - ms(profile.dutySince)) / 60000);
+    el.textContent = `since ${timeOfDay(profile.dutySince)} · ${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
+  }
+  async function cardIn(btn) {
+    await busy(btn, async () => {
+      try { await api('duty', { action: 'in' }); play('taskDone'); toast("You're on duty. Have a good shift!", 'ok'); }
+      catch (e) { toast(e.message, 'error', 7000); }
+    });
+  }
+  async function cardOut(btn) {
+    const mine = [...tasks.values()].filter((t) => owner(t) === 'mine').length;
+    const ok = await confirmBox('Card out?',
+      mine ? `You still have ${mine} open task${mine > 1 ? 's' : ''}. Your manager will see ${mine > 1 ? 'them' : 'it'} as not done.` : 'You stop getting new tasks until you card in again.',
+      'Card out', !!mine, 'Stay on duty');
+    if (!ok) return;
+    await busy(btn, async () => {
+      try {
+        const r = await api('duty', { action: 'out' });
+        const m = r.minutes || 0;
+        toast(`Carded out. You worked ${Math.floor(m / 60)}h ${m % 60}m today on this shift.`, 'info', 7000);
+      } catch (e) { toast(e.message, 'error', 7000); }
+    });
+  }
 
   // ---- Actions ----
   async function accept(t, btn) {
