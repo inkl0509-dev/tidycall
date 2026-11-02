@@ -242,6 +242,28 @@ label small { font-weight: 400; }
 .mini-badge.bad { --fade: 1; background: color-mix(in srgb, var(--hibiscus-soft) calc(var(--fade) * 100%), var(--surface-2)); opacity: calc(0.45 + var(--fade) * 0.55); }
 .remind-note { color: var(--sun); font-weight: 600; font-size: 0.8rem; }
 
+/* Sound settings */
+.sound-btn { font-size: 1.15rem; }
+.sound-settings { display: grid; gap: 12px; }
+.sound-master { display: flex; gap: 1.4rem; flex-wrap: wrap; }
+.switch { display: flex; align-items: center; gap: 0.5rem; font-weight: 600; cursor: pointer; }
+.switch input { width: 22px; height: 22px; min-height: 0; accent-color: var(--lagoon); }
+.volume { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 0.8rem; }
+.volume input { min-height: 0; padding: 0; border: 0; accent-color: var(--lagoon); background: transparent; box-shadow: none; }
+.sound-list { display: grid; gap: 8px; }
+.sound-row {
+  display: grid; grid-template-columns: 1fr 1fr auto auto; align-items: center; gap: 8px;
+  background: var(--surface); border-radius: var(--radius-m); padding: 8px 8px 8px 14px;
+}
+.sound-row select { min-height: 40px; padding: 0.35rem 0.6rem; }
+.sound-row select.repeat { width: 68px; }
+.sound-label { font-weight: 600; font-size: 0.92rem; }
+dialog .sound-row { background: var(--surface-2); }
+@media (max-width: 520px) {
+  .sound-row { grid-template-columns: 1fr auto auto; padding: 10px; }
+  .sound-label { grid-column: 1 / -1; }
+}
+
 /* ---------- Manager ---------- */
 .tabs { display: flex; gap: 4px; }
 .tab {
