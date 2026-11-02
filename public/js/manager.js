@@ -1,7 +1,7 @@
 // Manager screen: send tasks, live board, team, settings.
 import { collection, query, where, onSnapshot, doc, updateDoc, setDoc, serverTimestamp, Timestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { db, api } from './firebase.js';
-import { h, fill, mount, toast, sound, buzz, ms, clock, duration, timeOfDay, startOfToday, busy, listenError, dialog, confirmBox } from './ui.js';
+import { h, fill, mount, toast, play, soundSettings, ms, clock, duration, timeOfDay, startOfToday, busy, listenError, dialog, confirmBox } from './ui.js';
 import { pushBanner, refreshPushIfGranted, onForegroundPush, pushState, enablePush } from './push.js';
 
 const B = self.BADGES;
@@ -56,8 +56,9 @@ export function start({ user, logout, brand }) {
   refreshPushIfGranted('manager').then((ok) => { if (ok && banner) banner.remove(); });
   onForegroundPush((p) => {
     const d = (p && p.data) || {};
-    if (d.type === 'overdue' && !alerted.has(d.taskId)) {
-      alerted.add(d.taskId); sound.overdue(); buzz([500, 200, 500]);
+    const key = `${d.taskId}:${p.notification ? p.notification.title : ''}`;
+    if (d.type === 'overdue' && !alerted.has(key)) {
+      alerted.add(key); alerted.add(d.taskId); play('overdue');
       toast(p.notification ? `${p.notification.title}: ${p.notification.body}` : 'A task is overdue', 'error', 9000);
     }
   });
@@ -101,10 +102,10 @@ export function start({ user, logout, brand }) {
   // Live updates on the board, no push needed.
   function announce(before, t) {
     if (before.status === t.status) return;
-    if (t.status === 'accepted') { sound.soft(); toast(`${t.staffName} accepted ${t.typeLabel} · ${t.location}`, 'info'); }
+    if (t.status === 'accepted') { play('accepted'); toast(`${t.staffName} accepted ${t.typeLabel} · ${t.location}`, 'info'); }
     if (t.status === 'done') {
       const late = t.badge && t.badge.bad;
-      if (late) sound.soft(); else sound.done();
+      play(late ? 'finishedLate' : 'finished');
       const pts = typeof t.points === 'number' ? ` (${t.points > 0 ? '+' : '−'}${Math.abs(t.points)} pts)` : '';
       toast(`${t.badge ? t.badge.emoji + ' ' : ''}${t.staffName} finished ${t.typeLabel} · ${t.location} in ${duration(t.durationSec)}${late ? ', late' : ''}${pts}`, late ? 'warn' : 'ok', 6000);
       flash(t.id);
@@ -209,6 +210,7 @@ export function start({ user, logout, brand }) {
         });
         if (r.pushSent > 0) toast(`Sent to ${r.staffName}. Their phone was notified.`, 'ok');
         else toast(`Sent to ${r.staffName}, but no phone was notified: they need to turn on notifications. The task is on their screen when they open the app.`, 'warn', 9000);
+        play('sent');
         resetPick(); renderSend();
         if (!matchMedia('(min-width: 1000px)').matches) setTab('board');
         flash(r.id);
@@ -290,7 +292,7 @@ export function start({ user, logout, brand }) {
     // Overdue alert on this screen.
     const overdue = [...openMap.values()].filter((t) => ms(t.dueAt) < now);
     overdue.forEach((t) => {
-      if (!alerted.has(t.id)) { alerted.add(t.id); sound.overdue(); buzz([500, 200, 500]); }
+      if (!alerted.has(t.id)) { alerted.add(t.id); play('overdue'); }
     });
     // Ask the server to send any reminder or alert that's due (staff reminders, manager alerts). Each is sent once.
     if (now - lastCheck > 20000 && [...openMap.values()].some((t) => B.nextAction(t, now))) {
@@ -457,6 +459,7 @@ export function start({ user, logout, brand }) {
         try { await setDoc(doc(db, 'config', 'app'), draft); toast('Settings saved.', 'ok'); }
         catch (ex) { toast(`Could not save: ${ex.message}`, 'error'); }
       }) }, 'Save settings'),
+      h('fieldset.step', h('legend', 'Sounds on this device'), soundSettings('manager')),
       h('fieldset.step', h('legend', 'Notifications on this device'), pushStatus,
         h('div.row-start',
           pushState() === 'granted' ? null : h('button.btn.ghost', { type: 'button', onclick: async () => {
