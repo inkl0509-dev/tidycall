@@ -21,26 +21,27 @@ service cloud.firestore {
     }
 
     match /tasks/{taskId} {
-      allow read: if isManager() || (signedIn() && resource.data.staffId == request.auth.uid);
+      // Staff see tasks sent to them (including group tasks someone else took).
+      allow read: if isManager()
+        || (signedIn() && (resource.data.staffId == request.auth.uid
+                           || request.auth.uid in resource.data.get('staffIds', [])));
       allow create, delete: if false; // created by /api/assign
 
-      allow update: if
-        // Staff accepts their own task.
-        (signedIn()
-          && resource.data.staffId == request.auth.uid
-          && resource.data.status == 'assigned'
-          && request.resource.data.status == 'accepted'
-          && request.resource.data.acceptedAt == request.time
-          && changed().hasOnly(['status', 'acceptedAt']))
-        ||
-        // Manager cancels an open task.
-        (isManager()
+      // Accept and Done go through the server (/api/accept, /api/complete) so only one person can take a group task.
+      // Managers can cancel an open task directly.
+      allow update: if isManager()
           && resource.data.open == true
           && request.resource.data.status == 'cancelled'
           && request.resource.data.open == false
           && request.resource.data.cancelledAt == request.time
           && request.resource.data.cancelledBy == request.auth.uid
-          && changed().hasOnly(['status', 'open', 'cancelledAt', 'cancelledBy']));
+          && changed().hasOnly(['status', 'open', 'cancelledAt', 'cancelledBy']);
+    }
+
+    // In-house maps (floor plans + pinned places).
+    match /maps/{mapId} {
+      allow read: if signedIn();
+      allow write: if isManager();
     }
 
     // One doc per device; the doc id is the push token. Only the server reads these.
