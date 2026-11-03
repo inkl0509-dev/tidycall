@@ -2,6 +2,7 @@
 // No push is sent: the manager's board updates live from Firestore.
 const { db, Timestamp, requireUser, pushToUsers, baseUrl, route, clean, httpError, todayKey } = require('./_lib/firebase');
 const { award } = require('../public/js/badges-def.js');
+const { checkImage, addPhoto } = require('./_lib/photos');
 
 module.exports = route(['POST'], async (req, body) => {
   const user = await requireUser(req);
@@ -11,6 +12,7 @@ module.exports = route(['POST'], async (req, body) => {
   const store = db();
   const taskRef = store.collection('tasks').doc(taskId);
   const userRef = store.collection('users').doc(user.uid);
+  const photo = checkImage(body.photo); // optional photo of the finished area
 
   let claimedGroup = null; // a group task nobody had accepted yet: tell the others it's done
   const result = await store.runTransaction(async (tx) => {
@@ -47,7 +49,10 @@ module.exports = route(['POST'], async (req, body) => {
       status: 'done', open: false, doneAt: now, durationSec, onTime,
       overdue: !onTime, badge, points: r.points,
       acceptedAt: task.acceptedAt || now,
-      staffId: user.uid, staffName: task.staffId ? task.staffName : myName,
+      staffId: user.uid, staffName: task.staffId ? task.staffName : myName, needsReassign: false,
+      donePhotoId: photo ? addPhoto(store, tx, {
+        image: photo, taskId, kind: 'done', from: user.uid, fromName: myName, place: task.location, toManagers: true,
+      }) : null,
     });
 
     const milestones = Object.assign({}, profile.milestones || {});

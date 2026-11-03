@@ -100,7 +100,7 @@
 
   /** What should happen to this task now? One of: notAccepted, almostDue, escalate, overdueReminder, managerRepeat, or null. */
   function nextAction(task, now) {
-    if (!task || !task.open) return null;
+    if (!task || !task.open || task.status === 'declined') return null; // declined: managers were already told
     const r = reminderTimes(task);
     if (now >= r.due) {
       if (!task.escalatedAt) return 'escalate';

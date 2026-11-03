@@ -10,9 +10,9 @@ if (self.FIREBASE_CONFIG && !/PASTE/.test(self.FIREBASE_CONFIG.apiKey || '')) {
   firebase.messaging();
 }
 
-const CACHE = 'tidycall-v4';
+const CACHE = 'tidycall-v5';
 const SHELL = ['/', '/index.html', '/css/app.css', '/js/app.js', '/js/ui.js', '/js/firebase.js', '/js/push.js',
-  '/js/manager.js', '/js/staff.js', '/js/maps.js', '/js/badges-def.js', '/icons/icon-192.png'];
+  '/js/manager.js', '/js/staff.js', '/js/maps.js', '/js/photos.js', '/js/badges-def.js', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}).then(() => self.skipWaiting()));

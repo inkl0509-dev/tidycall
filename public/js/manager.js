@@ -2,6 +2,7 @@
 import { collection, query, where, onSnapshot, doc, updateDoc, setDoc, addDoc, deleteDoc, serverTimestamp, Timestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { db, api } from './firebase.js';
 import { h, fill, mount, toast, play, soundSettings, ms, clock, duration, timeOfDay, startOfToday, busy, listenError, dialog, confirmBox } from './ui.js';
+import { pickPhoto, photoPreview, photoButton } from './photos.js';
 import { compressImage, readMapPack, mapView, showOnMap, findPin, putMapInCache } from './maps.js';
 import { pushBanner, refreshPushIfGranted, onForegroundPush, pushState, enablePush } from './push.js';
 
@@ -21,7 +22,7 @@ export function start({ user, logout, brand }) {
   let dayKey = startOfToday().getTime();
 
   // Dispatch form state
-  const pick = { type: null, customType: '', location: '', mapPoint: null, minutes: null, urgent: false, staffIds: [], note: '', replace: null };
+  const pick = { type: null, customType: '', location: '', mapPoint: null, minutes: null, urgent: false, staffIds: [], note: '', replace: null, photo: null };
   let maps = [];
   let mapOpen = false;
   let mapTab = null;
@@ -137,6 +138,20 @@ export function start({ user, logout, brand }) {
 
   // Live updates on the board, no push needed.
   function announce(before, t) {
+    // Someone tapped "Can't go".
+    const nb = (before.declines || []).length; const na = (t.declines || []).length;
+    if (na > nb) {
+      const d = t.declines[na - 1];
+      play('declined');
+      const msg = h('span', `🙅 ${d.name} can't go: ${t.typeLabel} · ${t.location} (${d.reasonText}${d.note ? `, ${d.note}` : ''})`,
+        t.status === 'declined' ? ' Reassign it on the board.' : ` ${na} of ${(t.staffIds || []).length} said no.`);
+      toast(msg, 'warn', 9000);
+      flash(t.id);
+    }
+    // A finished-task photo arrived.
+    if (t.donePhotoId && t.donePhotoId !== before.donePhotoId) {
+      toast(h('span', `📷 ${t.staffName} sent a photo of ${t.location}. `, photoButton(t.donePhotoId, 'View', { title: t.location, canSave: true })), 'info', 9000);
+    }
     if (before.status === t.status) return;
     if (t.status === 'accepted') {
       play('accepted');
@@ -265,6 +280,12 @@ export function start({ user, logout, brand }) {
           h('input', { type: 'checkbox', checked: pick.urgent, onchange: (e) => { pick.urgent = e.target.checked; } }),
           h('span', 'Urgent: louder alert on their phone'))),
 
+      h('fieldset.step', h('legend', 'Photo (optional)'),
+        pick.photo
+          ? photoPreview(pick.photo, () => { pick.photo = null; renderSend(); })
+          : h('button.btn.ghost', { type: 'button', onclick: async () => { const p = await pickPhoto({ camera: false }); if (p) { pick.photo = p; renderSend(); } } }, '📷 Add a photo'),
+        h('small', 'Staff can view it once; it is deleted 2 minutes after they open it.')),
+
       h('fieldset.step', h('legend', 'Note (optional)'),
         h('input.inline-input', { placeholder: 'e.g. Guest waiting, 2 bath towels', maxLength: 200, value: pick.note, oninput: (e) => { pick.note = e.target.value; } })),
 
@@ -275,7 +296,7 @@ export function start({ user, logout, brand }) {
   }
 
   function resetPick() {
-    Object.assign(pick, { type: null, customType: '', location: '', mapPoint: null, urgent: false, staffIds: [], note: '', replace: null, minutes: config.defaultMinutes || 10 });
+    Object.assign(pick, { type: null, customType: '', location: '', mapPoint: null, urgent: false, staffIds: [], note: '', replace: null, photo: null, minutes: config.defaultMinutes || 10 });
   }
 
   // Map under "Where": tap a pinned place to pick it, or tap anywhere to mark the exact spot.
@@ -321,7 +342,7 @@ export function start({ user, logout, brand }) {
     await busy(btn, async () => {
       try {
         const r = await api('assign', {
-          staffIds: pick.staffIds, staffId: pick.staffIds[0], mapPoint: pick.mapPoint, typeLabel: type.label, typeEmoji: type.emoji || '', location: pick.location.trim(),
+          staffIds: pick.staffIds, staffId: pick.staffIds[0], mapPoint: pick.mapPoint, photo: pick.photo, typeLabel: type.label, typeEmoji: type.emoji || '', location: pick.location.trim(),
           note: pick.note.trim(), minutes: pick.minutes, priority: pick.urgent ? 'urgent' : 'normal',
           replaceTaskId: pick.replace ? pick.replace.id : undefined,
         });
@@ -341,8 +362,9 @@ export function start({ user, logout, brand }) {
     const now = Date.now();
     const tasks = [...all().values()];
     const open = tasks.filter((t) => t.open);
-    const overdue = open.filter((t) => ms(t.dueAt) < now).sort((a, b) => ms(a.dueAt) - ms(b.dueAt));
-    const active = open.filter((t) => ms(t.dueAt) >= now).sort((a, b) => (b.priority === 'urgent') - (a.priority === 'urgent') || ms(a.dueAt) - ms(b.dueAt));
+    const declined = open.filter((t) => t.status === 'declined');
+    const overdue = open.filter((t) => t.status !== 'declined' && ms(t.dueAt) < now).sort((a, b) => ms(a.dueAt) - ms(b.dueAt));
+    const active = open.filter((t) => t.status !== 'declined' && ms(t.dueAt) >= now).sort((a, b) => (b.priority === 'urgent') - (a.priority === 'urgent') || ms(a.dueAt) - ms(b.dueAt));
     const done = tasks.filter((t) => t.status === 'done' && ms(t.doneAt) >= dayKey).sort((a, b) => ms(b.doneAt) - ms(a.doneAt));
     const onTime = done.filter((t) => t.onTime).length;
     const avg = done.length ? done.reduce((s, t) => s + (t.durationSec || 0), 0) / done.length : 0;
@@ -357,6 +379,7 @@ export function start({ user, logout, brand }) {
           kpi(done.length, 'done today'),
           kpi(done.length ? `${Math.round((100 * onTime) / done.length)}%` : '–', 'on time'),
           kpi(done.length ? duration(avg) : '–', 'avg time'))),
+      declined.length ? section("Can't go: reassign", declined, 'declined') : null,
       overdue.length ? section('Over time', overdue, 'over') : null,
       section('In progress', active, 'active', 'Nothing in progress. Send a task to get started.'),
       section('Finished today', done, 'done', 'Finished tasks show up here as soon as staff tap Done.'));
@@ -379,7 +402,7 @@ export function start({ user, logout, brand }) {
 
   function row(t) {
     const isOpen = t.open;
-    const statusText = t.status === 'done' ? 'Done' : t.status === 'accepted' ? 'Accepted' : 'Sent';
+    const statusText = t.status === 'done' ? 'Done' : t.status === 'accepted' ? 'Accepted' : t.status === 'declined' ? "Can't go" : 'Sent';
     const right = isOpen
       ? h('div.row-time', h('span.row-clock', { dataset: { due: ms(t.dueAt) } }, '–:––'), h('small', `of ${t.minutes} min`))
       : h('div.row-time',
@@ -394,16 +417,23 @@ export function start({ user, logout, brand }) {
           ...(t.staffId
             ? [h('span.avatar.small', initials(t.staffName)), h('span', t.staffName)]
             : [h('span.avatar.small', '👥'), h('span', { title: (t.staffNames || []).join(', ') }, `Sent to ${(t.staffNames || []).length}: ${(t.staffNames || []).slice(0, 3).join(', ')}${(t.staffNames || []).length > 3 ? '…' : ''}`)]),
-          h(`span.status.s-${t.status}`, !t.staffId && isOpen ? 'Waiting for someone' : statusText),
+          h(`span.status.s-${t.status}`, !t.staffId && isOpen && t.status !== 'declined' ? 'Waiting for someone' : statusText),
           t.group && t.staffId ? h('span.muted', `first of ${(t.staffIds || []).length}`) : null,
           t.mapPoint ? h('button.map-link', { type: 'button', onclick: () => openTaskMap(t) }, '📍 Map') : null,
           h('span.muted', isOpen ? `sent ${timeOfDay(t.createdAt)}` : `done ${timeOfDay(t.doneAt)}`),
           isOpen && t.pushDevices === 0 ? h('span.warn-note', { title: 'Their phone has notifications off' }, 'phone not notified') : null,
           t.reminders ? h('span.remind-note', { title: 'Reminders sent to their phone' }, `🔔 reminded ${t.reminders}×`) : null),
-        t.note ? h('div.row-note', t.note) : null),
+        t.note ? h('div.row-note', t.note) : null,
+        // "Can't go" answers, each with its photo.
+        ...(t.declines || []).map((d) => h('div.decline-note',
+          h('span', `🙅 ${d.name}: ${d.reasonText}${d.note ? ` · "${d.note}"` : ''}`),
+          d.photoId ? photoButton(d.photoId, '📷 Photo', { title: `${d.name} · ${t.location}`, canSave: true }) : null)),
+        t.photoId || t.donePhotoId ? h('div.row-photos',
+          t.photoId ? photoButton(t.photoId, '📷 Your photo', { title: t.location, canSave: true }) : null,
+          t.donePhotoId ? photoButton(t.donePhotoId, '📷 Finished photo', { title: `${t.staffName} · ${t.location}`, canSave: true }) : null) : null),
       right,
       isOpen ? h('div.row-actions',
-        h('button.btn.ghost.small', { type: 'button', onclick: () => reassign(t) }, 'Reassign'),
+        h(`button.btn.small${t.status === 'declined' ? '' : '.ghost'}`, { type: 'button', onclick: () => reassign(t) }, 'Reassign'),
         h('button.btn.ghost.small.danger-text', { type: 'button', onclick: () => cancelTask(t) }, 'Cancel')) : null);
   }
 
@@ -458,7 +488,7 @@ export function start({ user, logout, brand }) {
     const known = (config.taskTypes || []).find((x) => x.label === t.typeLabel);
     if (known) pick.type = known; else pick.customType = t.typeLabel;
     Object.assign(pick, { location: t.location, mapPoint: t.mapPoint || null, minutes: t.minutes, urgent: t.priority === 'urgent', note: t.note || '', replace: t,
-      staffIds: t.staffId ? [] : [...(t.staffIds || [])] });
+      staffIds: t.staffId ? [] : (t.staffIds || []).filter((id) => !(t.declines || []).some((d) => d.uid === id)) });
     setTab('send');
     renderSend();
     sendPanel.scrollIntoView({ behavior: 'smooth' });

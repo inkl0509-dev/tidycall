@@ -1,7 +1,7 @@
 // GET  /api/setup — tells the login screen whether the server is configured and whether a manager exists.
 // POST /api/setup — creates the very first manager. Needs SETUP_KEY and only works while no manager exists.
 const { db, auth, Timestamp, route, clean, httpError, emailFor, serviceAccount } = require('./_lib/firebase');
-const APP_VERSION = '2026-11-03';
+const APP_VERSION = '2026-11-03.2';
 
 const DEFAULT_CONFIG = {
   taskTypes: [

@@ -10,6 +10,7 @@
 // and by any open copy of the app when it sees a step is due (so it's instant while someone has the app open).
 const { db, Timestamp, bearer, requireUser, pushToUsers, baseUrl, route } = require('./_lib/firebase');
 const { nextAction } = require('../public/js/badges-def.js');
+const { purgePhotos } = require('./_lib/photos');
 
 module.exports = route(['GET', 'POST'], async (req) => {
   const token = bearer(req);
@@ -19,10 +20,11 @@ module.exports = route(['GET', 'POST'], async (req) => {
   const store = db();
   const now = Timestamp.now();
   const nowMs = now.toMillis();
+  const purged = await purgePhotos(store).catch(() => 0); // temporary photos whose time is up
   const snap = await store.collection('tasks').where('open', '==', true).get();
 
   const work = snap.docs.map((d) => ({ doc: d, t: d.data(), action: nextAction(d.data(), nowMs) })).filter((w) => w.action);
-  if (!work.length) return { escalated: 0, reminded: 0 };
+  if (!work.length) return { escalated: 0, reminded: 0, purged };
 
   let managerIds = null;
   const managers = async () => {
@@ -98,5 +100,5 @@ module.exports = route(['GET', 'POST'], async (req) => {
       escalated++;
     }
   }
-  return { escalated, reminded };
+  return { escalated, reminded, purged };
 });

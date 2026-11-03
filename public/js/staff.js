@@ -2,6 +2,7 @@
 import { collection, query, where, onSnapshot, doc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { db, api } from './firebase.js';
 import { getMap, mapThumb } from './maps.js';
+import { pickPhoto, photoPreview, photoButton } from './photos.js';
 import { h, fill, mount, toast, play, ms, clock, duration, timeOfDay, busy, listenError, dialog, confirmBox, soundSettings } from './ui.js';
 import { pushBanner, refreshPushIfGranted, onForegroundPush } from './push.js';
 
@@ -20,7 +21,11 @@ export function start({ user, logout, brand }) {
   const list = h('section.task-list', { 'aria-live': 'polite' });
   const takenEl = h('section.taken-list');
   // Whose task is it?  mine = I own it · offered = sent to several, nobody has taken it · taken = a teammate took it
-  const owner = (t) => (t.staffId === uid ? 'mine' : !t.staffId ? 'offered' : 'taken');
+  // declined = I said "Can't go" and it's waiting for the manager (or for a teammate in a group)
+  const iDeclined = (t) => (t.declines || []).some((d) => d.uid === uid);
+  const owner = (t) => (t.staffId && t.staffId !== uid ? 'taken'
+    : iDeclined(t) || (t.status === 'declined' && t.staffId === uid) ? 'declined'
+      : t.staffId === uid ? 'mine' : 'offered');
   const badgesEl = h('section.my-badges');
   const statsEl = h('div.stat-line');
   const dutyEl = h('section.duty-bar');
@@ -91,14 +96,22 @@ export function start({ user, logout, brand }) {
 
   // ---- Rendering ----
   function sorted() {
-    return [...tasks.values()].filter((t) => owner(t) !== 'taken').sort((a, b) =>
+    return [...tasks.values()].filter((t) => owner(t) === 'mine' || owner(t) === 'offered').sort((a, b) =>
       (b.priority === 'urgent') - (a.priority === 'urgent') || ms(a.dueAt) - ms(b.dueAt));
   }
 
   function renderTasks() {
     const items = sorted();
     const taken = [...tasks.values()].filter((t) => owner(t) === 'taken');
-    fill(takenEl, taken.length ? [
+    const declined = [...tasks.values()].filter((t) => owner(t) === 'declined');
+    fill(takenEl, declined.length ? [
+      h('h2.section-title', "You said you can't go"),
+      ...declined.map((t) => h('div.taken-row.declined-row',
+        h('span.taken-check', { 'aria-hidden': 'true' }, '🙅'),
+        h('div', h('strong', `${t.typeEmoji || ''} ${t.typeLabel} · ${t.location}`.trim()),
+          h('small', t.staffIds && t.staffIds.length > 1 && t.status !== 'declined' ? 'A teammate may take it.' : 'Your manager has been told and will reassign it.')),
+        h('button.btn.ghost.small', { type: 'button', onclick: (e) => accept(t, e.currentTarget) }, 'I can go now'))),
+    ] : null, taken.length ? [
       h('h2.section-title', 'Taken by teammates'),
       ...taken.map((t) => h('div.taken-row',
         h('span.taken-check', { 'aria-hidden': 'true' }, '✓'),
@@ -138,11 +151,15 @@ export function start({ user, logout, brand }) {
         h('h3.task-where', t.location),
         offered ? h('p.group-note', `Also sent to ${others.join(', ')}. First to accept takes it.`) : null,
         t.note ? h('p.task-note', t.note) : null,
+        t.photoId ? photoButton(t.photoId, '📷 Photo from your manager. Tap to view (deleted 2 min after you open it)', { title: `${t.location}` }) : null,
         mapSlot,
         h('div.task-clock',
           h('span.clock-num', { role: 'timer' }, '–:––'),
           h('span.clock-label', 'left')),
-        h('div.task-actions', acceptBtn, doneBtn)));
+        h('div.task-actions', acceptBtn, doneBtn),
+        h('div.task-extra',
+          h('button.link-btn', { type: 'button', onclick: (e) => finish(t, e.currentTarget, true) }, '📷 Done + photo'),
+          h('button.link-btn.cant-go', { type: 'button', onclick: () => cantGo(t) }, "🙅 Can't go"))));
   }
 
   function tick() {
@@ -160,7 +177,7 @@ export function start({ user, logout, brand }) {
       if (t) localReminders(t, now);
     });
     // Ask the server to send any reminder/alert that is due (it sends each one only once).
-    if (now - lastCheck > 20000 && [...tasks.values()].some((t) => owner(t) !== 'taken' && B.nextAction(t, now))) {
+    if (now - lastCheck > 20000 && [...tasks.values()].some((t) => (owner(t) === 'mine' || owner(t) === 'offered') && B.nextAction(t, now))) {
       lastCheck = now;
       api('check-overdue').catch(() => {});
     }
@@ -237,6 +254,34 @@ export function start({ user, logout, brand }) {
     });
   }
 
+  // ---- Can't go: tell the manager why, optionally with a photo of the area ----
+  function cantGo(t) {
+    let reason = 'busy';
+    let photo = null;
+    dialog(`Can't go to ${t.location}?`, (close) => {
+      const reasons = [['busy', '🧹 Busy on another task'], ['away', '🚶 Away from site'], ['other', '✋ Other reason']];
+      const reasonBox = h('div.chips');
+      const drawReasons = () => fill(reasonBox, ...reasons.map(([id, label]) => h(`button.chip${reason === id ? '.on' : ''}`, {
+        type: 'button', 'aria-pressed': String(reason === id), onclick: () => { reason = id; drawReasons(); },
+      }, label)));
+      drawReasons();
+      const note = h('input', { placeholder: 'Note (optional), e.g. Cleaning Kitchen, 10 min', maxLength: 200 });
+      const photoBox = h('div.photo-slot');
+      const drawPhoto = () => fill(photoBox, photo
+        ? photoPreview(photo, () => { photo = null; drawPhoto(); })
+        : h('button.btn.ghost', { type: 'button', onclick: async () => { photo = await pickPhoto(); drawPhoto(); } }, '📷 Add photo of the area'));
+      drawPhoto();
+      const sendBtn = h('button.btn.big.wide', { type: 'button', onclick: () => busy(sendBtn, async () => {
+        try {
+          const r = await api('decline', { taskId: t.id, reason, note: note.value, photo });
+          toast(r.everyone ? 'Your manager has been told.' : 'Thanks. A teammate can take it.', 'info');
+          close(true);
+        } catch (e) { toast(e.message, 'error', 7000); }
+      }) }, 'Tell my manager');
+      return h('div.sheet-body', h('p', 'Your manager gets an alert and can give it to someone else.'), reasonBox, note, photoBox, sendBtn);
+    });
+  }
+
   // ---- Actions ----
   async function accept(t, btn) {
     await busy(btn, async () => {
@@ -245,11 +290,17 @@ export function start({ user, logout, brand }) {
     });
   }
 
-  async function finish(t, btn) {
+  async function finish(t, btn, withPhoto) {
+    let photo = null;
+    if (withPhoto) {
+      photo = await pickPhoto();
+      if (!photo) return; // cancelled
+    }
     await busy(btn, async () => {
       try {
         finishedByMe.add(t.id);
-        const r = await api('complete', { taskId: t.id });
+        const r = await api('complete', { taskId: t.id, photo });
+        if (photo) toast('Photo sent to your manager.', 'ok');
         play(r.badge.bad ? 'lateDone' : 'taskDone');
         celebrate(t, r);
       } catch (e) {

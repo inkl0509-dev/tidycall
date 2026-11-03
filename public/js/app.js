@@ -5,7 +5,7 @@ import { h, mount, toast, busy } from './ui.js';
 import { registerSW, forgetDevice } from './push.js';
 
 const APP = self.APP_NAME || 'TidyCall';
-export const APP_VERSION = '2026-11-03'; // keep the same as api/setup.js
+export const APP_VERSION = '2026-11-03.2'; // keep the same as api/setup.js
 
 /** Checks the server matches this page, and shows a red banner with the fix if not. */
 async function healthCheck() {

@@ -107,6 +107,7 @@ export const SOUND_EVENTS = [
   { id: 'finished',     role: 'manager', label: 'Task finished on time',        tone: 'success',  repeat: 1, vibrate: null },
   { id: 'finishedLate', role: 'manager', label: 'Task finished late',           tone: 'low',      repeat: 1, vibrate: [200] },
   { id: 'overdue',      role: 'manager', label: 'Task overdue',                 tone: 'alarm',    repeat: 3, vibrate: [500, 200, 500, 200, 500] },
+  { id: 'declined',     role: 'manager', label: "Staff can't go",               tone: 'dingdong', repeat: 2, vibrate: [300, 100, 300] },
 ];
 const REPEATS = [1, 2, 3, 5];
 const PREFS_KEY = 'tc_sound_v1';

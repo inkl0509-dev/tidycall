@@ -9,8 +9,8 @@ const MAX_SIDE = 2000;
 const MAX_CHARS = 800000; // keeps each map well under Firestore's 1 MB document limit
 
 /** Shrink a photo/scan of the floor plan so it fits in one Firestore document. */
-export async function compressImage(file) {
-  if (!file || !/^image\//.test(file.type)) throw new Error('Choose an image file (JPG or PNG). For a PDF plan, take a screenshot first.');
+export async function compressImage(file, { maxSide = MAX_SIDE, maxChars = MAX_CHARS } = {}) {
+  if (!file || !/^image\//.test(file.type)) throw new Error('Choose a picture (JPG or PNG).');
   const url = URL.createObjectURL(file);
   try {
     const img = await new Promise((resolve, reject) => {
@@ -19,7 +19,7 @@ export async function compressImage(file) {
       i.onerror = () => reject(new Error('Could not read that image.'));
       i.src = url;
     });
-    let side = Math.min(MAX_SIDE, Math.max(img.naturalWidth, img.naturalHeight));
+    let side = Math.min(maxSide, Math.max(img.naturalWidth, img.naturalHeight));
     for (let attempt = 0; attempt < 8; attempt++) {
       const scale = side / Math.max(img.naturalWidth, img.naturalHeight);
       const w = Math.round(img.naturalWidth * scale);
@@ -31,7 +31,7 @@ export async function compressImage(file) {
       g.drawImage(img, 0, 0, w, hgt);
       for (const q of [0.8, 0.65, 0.5]) {
         const data = c.toDataURL('image/jpeg', q);
-        if (data.length <= MAX_CHARS) return { image: data, width: w, height: hgt };
+        if (data.length <= maxChars) return { image: data, width: w, height: hgt };
       }
       side = Math.round(side * 0.75);
     }

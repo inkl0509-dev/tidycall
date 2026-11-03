@@ -22,10 +22,12 @@ module.exports = route(['POST'], async (req, body) => {
     if (t.status === 'cancelled') throw httpError(409, 'The manager cancelled this task.');
     if (!t.open) throw httpError(409, 'This task is already done.');
     if (t.staffId && t.staffId !== user.uid) throw httpError(409, `${t.staffName || 'Someone else'} already took this task.`);
-    if (t.status === 'accepted') return { already: true, t };
+    if (t.status === 'accepted' && t.staffId === user.uid) return { already: true, t };
 
     const name = (me.exists && me.data().name) || 'Staff';
-    tx.update(taskRef, { staffId: user.uid, staffName: name, status: 'accepted', acceptedAt: Timestamp.now() });
+    // Accepting also takes back an earlier "Can't go" from this person.
+    const declines = (t.declines || []).filter((d) => d.uid !== user.uid);
+    tx.update(taskRef, { staffId: user.uid, staffName: name, status: 'accepted', acceptedAt: Timestamp.now(), declines, needsReassign: false });
     return { already: false, t, name };
   });
 

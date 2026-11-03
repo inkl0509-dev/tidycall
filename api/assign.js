@@ -1,6 +1,7 @@
 // POST /api/assign — manager sends a task to one or more staff. Creates the task and pushes it to their phones.
 // Sent to several people: everyone gets the push, and the first to accept takes it (see api/accept.js).
 const { db, Timestamp, requireUser, pushToUsers, baseUrl, route, clean, httpError } = require('./_lib/firebase');
+const { checkImage, addPhoto } = require('./_lib/photos');
 
 const MAX_PEOPLE = 30;
 
@@ -24,6 +25,7 @@ module.exports = route(['POST'], async (req, body) => {
   const priority = body.priority === 'urgent' ? 'urgent' : 'normal';
   const minutes = Math.round(Number(body.minutes));
   const mapPoint = readMapPoint(body.mapPoint);
+  const photo = checkImage(body.photo);
   if (!ids.length) throw httpError(400, 'Choose at least one staff member.');
   if (ids.length > MAX_PEOPLE) throw httpError(400, `Send to at most ${MAX_PEOPLE} people at once.`);
   if (!location) throw httpError(400, 'Choose or type a location.');
@@ -61,6 +63,11 @@ module.exports = route(['POST'], async (req, body) => {
   };
 
   const batch = store.batch();
+  if (photo) {
+    task.photoId = addPhoto(store, batch, {
+      image: photo, taskId: ref.id, kind: 'assign', from: manager.uid, fromName: managerName, place: location, to: task.staffIds,
+    });
+  }
   batch.set(ref, task);
   // "Reassign": close the old task in the same write.
   const replace = clean(body.replaceTaskId, 128);
@@ -76,7 +83,7 @@ module.exports = route(['POST'], async (req, body) => {
   const title = `${priority === 'urgent' ? '🚨 URGENT · ' : ''}${typeEmoji ? typeEmoji + ' ' : ''}${typeLabel}`;
   const push = await pushToUsers(task.staffIds, {
     title,
-    body: `${location} · finish within ${minutes} min${group ? ' · first to accept takes it' : ''}${note ? ` · ${note}` : ''}`,
+    body: `${location} · finish within ${minutes} min${group ? ' · first to accept takes it' : ''}${note ? ` · ${note}` : ''}${photo ? ' · 📷 photo' : ''}`,
     tag: `task-${ref.id}`,
     requireInteraction: true,
     vibrate: priority === 'urgent' ? [400, 120, 400, 120, 400, 120, 600] : [250, 100, 250],

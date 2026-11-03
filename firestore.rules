@@ -44,6 +44,12 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // Temporary photos. Created, opened and deleted only through the server (/api/photo),
+    // which starts the 2-minute countdown when the receiver opens one.
+    match /photos/{photoId} {
+      allow read, write: if false;
+    }
+
     // In-house maps (floor plans + pinned places).
     match /maps/{mapId} {
       allow read: if signedIn();

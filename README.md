@@ -21,6 +21,15 @@ Managers send a task ("Clean · Toilet 2 · 10 min") to one housekeeper. The hou
 - **On my way** (optional, tells the manager they've seen it) and **Done**.
 - A badge pops up after every task, plus milestone badges.
 
+### "Can't go" and photos
+**Can't go:** under each task a housekeeper can tap **🙅 Can't go**, pick *Busy on another task*, *Away from site* or *Other*, add a note and a **photo of the area**, and tap **Tell my manager**. Managers get a push and the task moves to **Can't go: reassign** at the top of the board, with the reason and a **📷 Photo** button. **Reassign** opens it on the Send screen with the people who said no left out. For a task sent to several people, managers are only alerted when everyone has said no. If plans change, the housekeeper can tap **I can go now**.
+
+**Photos:**
+- Managers can add a photo when sending a task (**Photo (optional)** on the Send screen).
+- Housekeepers can tap **📷 Done + photo** to send a picture of the finished area.
+- **Photos are temporary.** Each one is deleted 2 minutes after its receiver first opens it (a countdown shows), or after 24 hours if nobody opens it. Managers get **⬇ Save to device** to keep a copy before it's gone.
+- Photos are shrunk on the phone and stored in Firestore, so no extra Firebase setup is needed.
+
 ### Card in / card out
 Housekeepers tap **Card in** at the top of their screen when they start work and **Card out** when they leave. If they still have open tasks when carding out, they're warned first.
 
@@ -196,6 +205,7 @@ cron-job.org ─POST /api/check-overdue─▶ Vercel ──▶ push to all manag
 | `public/js/staff.js` | Task cards, countdown, Done, badges |
 | `public/js/push.js` | Notification permission and device registration |
 | `public/js/maps.js` | In-house maps: upload, pins, map view |
+| `public/js/photos.js` | Take a photo, view it with the countdown, save to device |
 | `public/js/badges-def.js` | Points, badge and reminder rules (used by both app and server) |
 | `public/sw.js` | Background push + offline shell |
 | `api/assign.js` | Creates a task and pushes it to the housekeeper |
@@ -203,6 +213,8 @@ cron-job.org ─POST /api/check-overdue─▶ Vercel ──▶ push to all manag
 | `api/check-overdue.js` | Sends the reminder schedule: staff reminders, manager overdue alerts |
 | `api/accept.js` | "On my way" / "I'll take it": first to accept takes a group task |
 | `api/duty.js` | Card in / card out, shift records |
+| `api/decline.js` | "Can't go" with reason, note and photo; alerts managers |
+| `api/photo.js` | Opens a temporary photo (starts the 2-minute countdown), deletes it, adds a done photo |
 | `api/staff.js` | Add person, reset PIN, switch on/off |
 | `api/setup.js` | Creates the first manager |
 | `api/test-push.js` | Test notification |
@@ -210,7 +222,7 @@ cron-job.org ─POST /api/check-overdue─▶ Vercel ──▶ push to all manag
 | `firestore.rules` | Who can read/change what in the database |
 | `android/` | Android Studio project for the mobile app |
 
-**Firestore collections:** `users` (name, role, stats, badges) · `tasks` (what, where, who, status, times, badge, map pin) · `config/app` (task types, places) · `maps` (floor plans + pins) · `shifts` (card in/out records) · `pushTokens` (one per device).
+**Firestore collections:** `users` (name, role, stats, badges) · `tasks` (what, where, who, status, times, badge, map pin) · `config/app` (task types, places) · `maps` (floor plans + pins) · `shifts` (card in/out records) · `photos` (temporary pictures) · `pushTokens` (one per device).
 
 **Security:** passwords/PINs are handled by Firebase Auth. Roles are stored as Firebase custom claims set by the server, so a housekeeper can't make themselves a manager. Staff can only read their own tasks and only change a task from *Sent* to *Accepted*; creating and completing tasks goes through the server, so badges can't be faked.
 
