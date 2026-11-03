@@ -16,15 +16,21 @@ export function emailFor(username) {
   return u.includes('@') ? u : `${u}@${LOGIN_DOMAIN}`;
 }
 
-/** POST JSON to /api/<path> with the signed-in user's ID token. Throws Error(message) on failure. */
+/** POST JSON to /api/<path> with the signed-in user's ID token. Throws Error(message) on failure.
+ *  On "not authorised" it gets a fresh token and tries once more (fixes most expired-session cases). */
 export async function api(path, body = {}, { method = 'POST', anonymous = false } = {}) {
-  const headers = { 'Content-Type': 'application/json' };
-  if (!anonymous && auth && auth.currentUser) headers.Authorization = `Bearer ${await auth.currentUser.getIdToken()}`;
-  let res;
-  try {
-    res = await fetch(`/api/${path}`, { method, headers, body: method === 'GET' ? undefined : JSON.stringify(body) });
-  } catch (e) {
-    throw new Error('No connection. Check the Wi-Fi and try again.');
+  const send = async (fresh) => {
+    const headers = { 'Content-Type': 'application/json' };
+    if (!anonymous && auth && auth.currentUser) headers.Authorization = `Bearer ${await auth.currentUser.getIdToken(fresh)}`;
+    try {
+      return await fetch(`/api/${path}`, { method, headers, body: method === 'GET' ? undefined : JSON.stringify(body) });
+    } catch (e) {
+      throw new Error('No connection. Check the Wi-Fi and try again.');
+    }
+  };
+  let res = await send(false);
+  if (res.status === 401 && !anonymous && auth && auth.currentUser) {
+    try { res = await send(true); } catch (e) { /* keep the first answer */ }
   }
   let data = {};
   try { data = await res.json(); } catch (e) { /* not JSON */ }

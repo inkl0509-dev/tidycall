@@ -1,7 +1,8 @@
 // Staff screen: live list of my tasks, Accept / Done, countdown, badges.
-import { collection, query, where, onSnapshot, doc, updateDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
+import { collection, query, where, onSnapshot, doc } from 'https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js';
 import { db, api } from './firebase.js';
-import { h, fill, mount, toast, play, ms, clock, duration, busy, listenError, dialog, soundSettings } from './ui.js';
+import { getMap, mapThumb } from './maps.js';
+import { h, fill, mount, toast, play, ms, clock, duration, timeOfDay, busy, listenError, dialog, confirmBox, soundSettings } from './ui.js';
 import { pushBanner, refreshPushIfGranted, onForegroundPush } from './push.js';
 
 const B = self.BADGES;
@@ -17,8 +18,12 @@ export function start({ user, logout, brand }) {
   const focusId = new URLSearchParams(location.search).get('task');
 
   const list = h('section.task-list', { 'aria-live': 'polite' });
+  const takenEl = h('section.taken-list');
+  // Whose task is it?  mine = I own it · offered = sent to several, nobody has taken it · taken = a teammate took it
+  const owner = (t) => (t.staffId === uid ? 'mine' : !t.staffId ? 'offered' : 'taken');
   const badgesEl = h('section.my-badges');
   const statsEl = h('div.stat-line');
+  const dutyEl = h('section.duty-bar');
   const banner = pushBanner('staff', 'So you hear about new tasks even when this app is closed.');
 
   const screen = h('div.shell.staff',
@@ -30,8 +35,10 @@ export function start({ user, logout, brand }) {
         h('button.btn.ghost.small', { type: 'button', onclick: logout }, 'Sign out'))),
     h('main.staff-main',
       banner,
+      dutyEl,
       statsEl,
       list,
+      takenEl,
       h('h2.section-title', 'My badges'),
       badgesEl));
   mount(screen);
@@ -48,23 +55,30 @@ export function start({ user, logout, brand }) {
   });
 
   // ---- Live data ----
-  const qTasks = query(collection(db, 'tasks'), where('staffId', '==', uid), where('open', '==', true));
+  const qTasks = query(collection(db, 'tasks'), where('staffIds', 'array-contains', uid), where('open', '==', true));
   const unsubTasks = onSnapshot(qTasks, (snap) => {
     snap.docChanges().forEach((c) => {
       const t = { id: c.doc.id, ...c.doc.data() };
+      const before = tasks.get(t.id);
       if (c.type === 'removed') {
         tasks.delete(t.id);
-        if (!firstLoad && !finishedByMe.has(t.id)) toast(`Cancelled by manager: ${t.typeLabel} · ${t.location}`, 'info', 6000);
+        if (firstLoad || finishedByMe.has(t.id) || !before) return;
+        if (owner(before) === 'mine') toast(`Cancelled by manager: ${t.typeLabel} · ${t.location}`, 'info', 6000);
+        else if (owner(before) === 'offered') toast(`Closed: ${t.typeLabel} · ${t.location}. No need to go.`, 'info', 6000);
       } else {
         tasks.set(t.id, t);
-        if (c.type === 'added' && !firstLoad) newTaskAlert(t);
+        if (c.type === 'added' && !firstLoad && owner(t) !== 'taken') newTaskAlert(t);
+        // A teammate took a task that was offered to me too.
+        if (before && owner(before) === 'offered' && owner(t) === 'taken') {
+          toast(`${t.staffName} is on it: ${t.typeLabel} · ${t.location}. No need to go.`, 'info', 6000);
+        }
       }
     });
     firstLoad = false;
     renderTasks();
   }, listenError);
 
-  const unsubMe = onSnapshot(doc(db, 'users', uid), (d) => { profile = d.data() || {}; renderBadges(); }, listenError);
+  const unsubMe = onSnapshot(doc(db, 'users', uid), (d) => { profile = d.data() || {}; renderBadges(); renderDuty(); }, listenError);
 
   function newTaskAlert(t) {
     play(t.priority === 'urgent' ? 'urgentTask' : 'newTask');
@@ -77,12 +91,20 @@ export function start({ user, logout, brand }) {
 
   // ---- Rendering ----
   function sorted() {
-    return [...tasks.values()].sort((a, b) =>
+    return [...tasks.values()].filter((t) => owner(t) !== 'taken').sort((a, b) =>
       (b.priority === 'urgent') - (a.priority === 'urgent') || ms(a.dueAt) - ms(b.dueAt));
   }
 
   function renderTasks() {
     const items = sorted();
+    const taken = [...tasks.values()].filter((t) => owner(t) === 'taken');
+    fill(takenEl, taken.length ? [
+      h('h2.section-title', 'Taken by teammates'),
+      ...taken.map((t) => h('div.taken-row',
+        h('span.taken-check', { 'aria-hidden': 'true' }, '✓'),
+        h('div', h('strong', `${t.typeEmoji || ''} ${t.typeLabel} · ${t.location}`.trim()),
+          h('small', `${t.staffName} is on it. No need to go.`)))),
+    ] : null);
     if (!items.length) {
       fill(list, h('div.all-clear',
         h('div.all-clear-mark', { 'aria-hidden': 'true' }, '✨'),
@@ -97,18 +119,26 @@ export function start({ user, logout, brand }) {
 
   function taskCard(t) {
     const urgent = t.priority === 'urgent';
+    const offered = owner(t) === 'offered';
     const doneBtn = h('button.btn.done-btn', { type: 'button', onclick: (e) => finish(t, e.currentTarget) }, 'Done');
     const acceptBtn = t.status === 'assigned'
-      ? h('button.btn.ghost.accept-btn', { type: 'button', onclick: (e) => accept(t, e.currentTarget) }, 'On my way')
+      ? h('button.btn.ghost.accept-btn', { type: 'button', onclick: (e) => accept(t, e.currentTarget) }, offered ? "I'll take it" : 'On my way')
       : h('span.accepted-note', 'You accepted this');
-    return h(`article.task${urgent ? '.urgent' : ''}`, { dataset: { task: t.id, due: ms(t.dueAt), start: ms(t.createdAt) } },
+    const others = (t.staffNames || []).filter((n, i) => (t.staffIds || [])[i] !== uid);
+    const mapSlot = h('div.map-slot');
+    if (t.mapPoint) {
+      getMap(t.mapPoint.mapId).then((m) => { if (m) fill(mapSlot, mapThumb(m, t.mapPoint, t.location)); }).catch(() => {});
+    }
+    return h(`article.task${urgent ? '.urgent' : ''}${offered ? '.offered' : ''}`, { dataset: { task: t.id, due: ms(t.dueAt), start: ms(t.createdAt) } },
       h('div.tank', { 'aria-hidden': 'true' }, h('div.tank-water')),
       h('div.task-body',
         h('div.task-top',
           h('span.task-type', `${t.typeEmoji || ''} ${t.typeLabel}`.trim()),
           urgent ? h('span.pill.pill-urgent', 'Urgent') : null),
         h('h3.task-where', t.location),
+        offered ? h('p.group-note', `Also sent to ${others.join(', ')}. First to accept takes it.`) : null,
         t.note ? h('p.task-note', t.note) : null,
+        mapSlot,
         h('div.task-clock',
           h('span.clock-num', { role: 'timer' }, '–:––'),
           h('span.clock-label', 'left')),
@@ -130,7 +160,7 @@ export function start({ user, logout, brand }) {
       if (t) localReminders(t, now);
     });
     // Ask the server to send any reminder/alert that is due (it sends each one only once).
-    if (now - lastCheck > 20000 && [...tasks.values()].some((t) => B.nextAction(t, now))) {
+    if (now - lastCheck > 20000 && [...tasks.values()].some((t) => owner(t) !== 'taken' && B.nextAction(t, now))) {
       lastCheck = now;
       api('check-overdue').catch(() => {});
     }
@@ -142,7 +172,9 @@ export function start({ user, logout, brand }) {
     const steps = [
       ['notAccepted', r.notAccepted, t.status === 'assigned', () => {
         play('reminder');
-        toast(`Reminder: ${t.location}. Tap "On my way" so your manager knows you're on it.`, 'warn', 7000);
+        toast(owner(t) === 'offered'
+          ? `Nobody has taken ${t.location} yet. Tap "I'll take it" if you can go.`
+          : `Reminder: ${t.location}. Tap "On my way" so your manager knows you're on it.`, 'warn', 7000);
       }],
       ['almostDue', r.almostDue, true, () => {
         play('almostDue');
@@ -160,13 +192,56 @@ export function start({ user, logout, brand }) {
       if (now - at < 90000) fire(); // don't replay old alerts when the app is reopened later
     }
   }
-  const timer = setInterval(tick, 1000);
+  const timer = setInterval(() => { tick(); dutyTick(); }, 1000);
+
+  // ---- Card in / card out ----
+  function renderDuty() {
+    if (!profile) return;
+    if (profile.onDuty) {
+      fill(dutyEl,
+        h('span.duty-dot', { 'aria-hidden': 'true' }),
+        h('div.duty-text', h('strong', 'On duty'), h('small.duty-since', '')),
+        h('button.btn.ghost.small.duty-btn', { type: 'button', onclick: (e) => cardOut(e.currentTarget) }, 'Card out'));
+    } else {
+      fill(dutyEl,
+        h('div.duty-text', h('strong', "You're off duty"), h('small', 'Card in when you start work so your manager can send you tasks.')),
+        h('button.btn.big.duty-btn', { type: 'button', onclick: (e) => cardIn(e.currentTarget) }, 'Card in'));
+    }
+    dutyEl.className = `duty-bar ${profile.onDuty ? 'on' : 'off'}`;
+    dutyTick();
+  }
+  function dutyTick() {
+    const el = dutyEl.querySelector('.duty-since');
+    if (!el || !profile || !profile.dutySince) return;
+    const mins = Math.floor((Date.now() - ms(profile.dutySince)) / 60000);
+    el.textContent = `since ${timeOfDay(profile.dutySince)} · ${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, '0')}m`;
+  }
+  async function cardIn(btn) {
+    await busy(btn, async () => {
+      try { await api('duty', { action: 'in' }); play('taskDone'); toast("You're on duty. Have a good shift!", 'ok'); }
+      catch (e) { toast(e.message, 'error', 7000); }
+    });
+  }
+  async function cardOut(btn) {
+    const mine = [...tasks.values()].filter((t) => owner(t) === 'mine').length;
+    const ok = await confirmBox('Card out?',
+      mine ? `You still have ${mine} open task${mine > 1 ? 's' : ''}. Your manager will see ${mine > 1 ? 'them' : 'it'} as not done.` : 'You stop getting new tasks until you card in again.',
+      'Card out', !!mine, 'Stay on duty');
+    if (!ok) return;
+    await busy(btn, async () => {
+      try {
+        const r = await api('duty', { action: 'out' });
+        const m = r.minutes || 0;
+        toast(`Carded out. You worked ${Math.floor(m / 60)}h ${m % 60}m today on this shift.`, 'info', 7000);
+      } catch (e) { toast(e.message, 'error', 7000); }
+    });
+  }
 
   // ---- Actions ----
   async function accept(t, btn) {
     await busy(btn, async () => {
-      try { await updateDoc(doc(db, 'tasks', t.id), { status: 'accepted', acceptedAt: serverTimestamp() }); }
-      catch (e) { toast('Could not accept. Check your connection.', 'error'); }
+      try { await api('accept', { taskId: t.id }); }
+      catch (e) { toast(e.message, 'error', 7000); }
     });
   }
 

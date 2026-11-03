@@ -5,6 +5,24 @@ import { h, mount, toast, busy } from './ui.js';
 import { registerSW, forgetDevice } from './push.js';
 
 const APP = self.APP_NAME || 'TidyCall';
+export const APP_VERSION = '2026-11-03'; // keep the same as api/setup.js
+
+/** Checks the server matches this page, and shows a red banner with the fix if not. */
+async function healthCheck() {
+  document.body.append(h('footer.app-version', `${APP} · version ${APP_VERSION}`));
+  let s;
+  try { s = await api('setup', {}, { method: 'GET', anonymous: true }); } catch (e) { return; }
+  const problems = [];
+  const appProject = (self.FIREBASE_CONFIG || {}).projectId;
+  if (s.serverProject && appProject && s.serverProject !== appProject) {
+    problems.push(`The website uses Firebase project "${appProject}" but the server key in Vercel (FIREBASE_SERVICE_ACCOUNT) is for "${s.serverProject}". Both must be the same project. Download a new key from project "${appProject}" (Project settings → Service accounts), paste it into Vercel, and redeploy.`);
+  }
+  if (s.version !== APP_VERSION) {
+    problems.push(`The website (version ${APP_VERSION}) and server (version ${s.version || 'older'}) don't match. Upload all files from the latest zip to GitHub again.`);
+  }
+  if (!problems.length) return;
+  document.body.prepend(h('div.health-banner', { role: 'alert' }, h('strong', 'Setup problem'), ...problems.map((p) => h('p', p))));
+}
 document.title = APP;
 let teardown = null;
 
@@ -92,6 +110,7 @@ export async function logout() {
 
 async function start() {
   if (!configured) return notConfigured();
+  healthCheck();
   registerSW();
   await setPersistence(auth, browserLocalPersistence).catch(() => {});
 

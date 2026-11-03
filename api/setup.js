@@ -1,6 +1,7 @@
 // GET  /api/setup — tells the login screen whether the server is configured and whether a manager exists.
 // POST /api/setup — creates the very first manager. Needs SETUP_KEY and only works while no manager exists.
-const { db, auth, Timestamp, route, clean, httpError, emailFor } = require('./_lib/firebase');
+const { db, auth, Timestamp, route, clean, httpError, emailFor, serviceAccount } = require('./_lib/firebase');
+const APP_VERSION = '2026-11-03';
 
 const DEFAULT_CONFIG = {
   taskTypes: [
@@ -20,9 +21,11 @@ const DEFAULT_CONFIG = {
 
 module.exports = route(['GET', 'POST'], async (req, body) => {
   if (req.method === 'GET') {
-    if (!process.env.FIREBASE_SERVICE_ACCOUNT) return { serverReady: false, needsSetup: true, setupKeySet: !!process.env.SETUP_KEY };
+    if (!process.env.FIREBASE_SERVICE_ACCOUNT) return { serverReady: false, needsSetup: true, setupKeySet: !!process.env.SETUP_KEY, version: APP_VERSION };
+    let serverProject = '';
+    try { serverProject = serviceAccount().project_id || ''; } catch (e) { /* reported below */ }
     const managers = await db().collection('users').where('role', '==', 'manager').limit(1).get();
-    return { serverReady: true, needsSetup: managers.empty, setupKeySet: !!process.env.SETUP_KEY };
+    return { serverReady: true, needsSetup: managers.empty, setupKeySet: !!process.env.SETUP_KEY, serverProject, version: APP_VERSION };
   }
 
   if (!process.env.SETUP_KEY) throw httpError(400, 'Add a SETUP_KEY environment variable in Vercel first, then redeploy.');

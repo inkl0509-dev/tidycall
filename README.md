@@ -21,9 +21,70 @@ Managers send a task ("Clean · Toilet 2 · 10 min") to one housekeeper. The hou
 - **On my way** (optional, tells the manager they've seen it) and **Done**.
 - A badge pops up after every task, plus milestone badges.
 
-### Badges
-| Every task gets one | When |
+### Card in / card out
+Housekeepers tap **Card in** at the top of their screen when they start work and **Card out** when they leave. If they still have open tasks when carding out, they're warned first.
+
+- **Send task → Who** lists on-duty staff first. **Everyone on duty** picks all of them; off-duty staff are under **Show off-duty staff**. Sending to someone off duty asks you to confirm.
+- Managers get a small message when someone cards in or out, and the board shows how many are **on duty**.
+- **Team** shows *On duty · since 8:02 AM* and the hours on duty today. Managers can **Card in / Card out** someone who forgot.
+- Every shift is saved in the `shifts` collection (start, end, minutes).
+
+### In-house map
+**Settings → In-house maps → Upload a map**: a photo, scan or screenshot of your floor plan or site map (one per floor or area if you like). Then choose each place from the list and tap where it is on the map to pin it. Pinned places show 📍 on the Send screen.
+
+When sending a task, tap a pinned place, or open **Pick on map** and tap the exact spot (e.g. "the corner by the lift"). The housekeeper's task card shows a small map centred on the pin; tapping it opens the full map with zoom. The manager's board has a **📍 Map** button on those tasks.
+
+Maps are saved in Firestore (shrunk automatically to fit), so no extra Firebase setup is needed.
+
+**Ready-made map:** `maps/lounge-map.json` is your lounge plan with 18 places already pinned. In **Settings → In-house maps → Import map file (.json)**, choose it, check the pins, and tap **Save map**. Any pinned places missing from your Places list are added automatically. You don't need to upload this file to GitHub.
+
+Wide plans scroll sideways on phones so the pins stay easy to tap.
+
+### Sending a task to several people
+In **Who**, tap as many people as you like (or **Everyone** / **Everyone free**). They all get the alert. The first one to tap **I'll take it** (or **Done**) gets the task:
+- Everyone else's card moves to **Taken by teammates: Aisha is on it. No need to go.** and their buttons disappear.
+- Their phone notification is quietly replaced with "✓ Aisha is on it" (no sound).
+- Only one person can take it, even if two tap at the same moment.
+- If nobody accepts, reminders go to all of them, and the manager's overdue alert says "Nobody has accepted".
+
+The board shows these as **Sent to 3: Aisha, Ali, Hassan · Waiting for someone**, then the name of whoever took it.
+
+### Points and badges
+| Finished | Badge | Points |
+|---|---|---|
+| In under half the time | ⚡ Lightning | +15 |
+| Urgent task, on time | 🚨 Rapid Responder | +12 |
+| On time | ✅ On Time | +10 |
+| Late | 🐢 Late (bad badge) | −5 |
+| More than double the time | 🐌 Very Late (bad badge) | −10 |
+
+**Bad badges fade away.** Each bad badge gets lighter with every on-time task finished after it, and disappears after **4** on-time tasks. Staff see the progress dots on their screen; managers see e.g. `🐢 2/4` on the Team page. A new late task gives a new bad badge that starts again from 0 (older ones keep their progress).
+
+Milestones (earned once): 🌱 First Shine (1st task), 🥉 10 tasks, 🥈 50, 🥇 100, 🏆 500, 🔥 5 on time in a row, ☄️ 20 in a row, 🏎️ 10 Lightning badges, 🌟 10 tasks in one day, 💎 500 points. The Team page lists staff by points, highest first.
+
+### Reminders and alerts (example: a 10-minute task)
+| When | Who gets a push |
 |---|---|
+| 2½ min, still not tapped "On my way" | Housekeeper: reminder |
+| 2 min left, not done | Housekeeper: "2 min left, tap Done to avoid losing points" |
+| Time's up, not done | **All managers**: overdue alert. Housekeeper: "Time's up" |
+| Every 5 min after that (up to 3 times) | Housekeeper: "Still not done" |
+| Double the time, still not done | **All managers**: second alert |
+
+The not-accepted reminder comes at 25% of the time (between 1 and 3 min); "almost up" comes 2 min before the end (or at 80% for short tasks). The manager's board shows `🔔 reminded 3×` on each task. Change the numbers in `public/js/badges-def.js` (`POINTS`, `FADE_AFTER`, `REMIND`).
+
+### Sounds
+Each phone can choose its own sounds: staff tap **🔊** at the top of their screen, managers open **Settings → Sounds on this device**. Pick a tone (Chime, Bell, Alarm, Siren and more) and how many times it repeats for every alert, set the volume, and use **▶ Test** to hear it. Sound and vibration can be switched off.
+
+| Staff hear | Managers hear |
+|---|---|
+| New task, new urgent task, reminder, time almost up, time's up, task done, task done late | Task sent, staff tapped "On my way", task finished, task finished late, task overdue |
+
+These sounds play while the app is open on screen. When the phone is locked, alerts use the phone's normal notification sound.
+
+These reminders need the cron-job.org check from setup step 6 (every minute) to reach phones that are locked.
+
+---|---|
 | ⚡ Lightning | Done in under half the time |
 | 🚨 Rapid Responder | Urgent task done on time |
 | ✅ On Time | Done before the deadline |
@@ -134,11 +195,14 @@ cron-job.org ─POST /api/check-overdue─▶ Vercel ──▶ push to all manag
 | `public/js/manager.js` | Send task, live board, team, settings |
 | `public/js/staff.js` | Task cards, countdown, Done, badges |
 | `public/js/push.js` | Notification permission and device registration |
-| `public/js/badges-def.js` | Badge rules (used by both app and server) |
+| `public/js/maps.js` | In-house maps: upload, pins, map view |
+| `public/js/badges-def.js` | Points, badge and reminder rules (used by both app and server) |
 | `public/sw.js` | Background push + offline shell |
 | `api/assign.js` | Creates a task and pushes it to the housekeeper |
-| `api/complete.js` | Closes the task, awards badges, updates stats |
-| `api/check-overdue.js` | Finds tasks past their limit, alerts managers once per task |
+| `api/complete.js` | Closes the task, gives points and a badge (or a bad badge if late), fades old bad badges |
+| `api/check-overdue.js` | Sends the reminder schedule: staff reminders, manager overdue alerts |
+| `api/accept.js` | "On my way" / "I'll take it": first to accept takes a group task |
+| `api/duty.js` | Card in / card out, shift records |
 | `api/staff.js` | Add person, reset PIN, switch on/off |
 | `api/setup.js` | Creates the first manager |
 | `api/test-push.js` | Test notification |
@@ -146,7 +210,7 @@ cron-job.org ─POST /api/check-overdue─▶ Vercel ──▶ push to all manag
 | `firestore.rules` | Who can read/change what in the database |
 | `android/` | Android Studio project for the mobile app |
 
-**Firestore collections:** `users` (name, role, stats, badges) · `tasks` (what, where, who, status, times, badge) · `config/app` (task types, places) · `pushTokens` (one per device).
+**Firestore collections:** `users` (name, role, stats, badges) · `tasks` (what, where, who, status, times, badge, map pin) · `config/app` (task types, places) · `maps` (floor plans + pins) · `shifts` (card in/out records) · `pushTokens` (one per device).
 
 **Security:** passwords/PINs are handled by Firebase Auth. Roles are stored as Firebase custom claims set by the server, so a housekeeper can't make themselves a manager. Staff can only read their own tasks and only change a task from *Sent* to *Accepted*; creating and completing tasks goes through the server, so badges can't be faked.
 
@@ -166,8 +230,9 @@ cron-job.org ─POST /api/check-overdue─▶ Vercel ──▶ push to all manag
 | No notifications on Android app | Phone Settings → Apps → TidyCall → Notifications → allow. Also turn off battery optimisation for the app so Android doesn't delay pushes |
 | Overdue push only when app is open | Set up cron-job.org (step 6) |
 | Forgot a PIN | A manager uses **Team → Reset PIN** |
+| "Choose a staff member" even though someone is selected | The website and server files are from different versions. Upload all files again (keep your `public/firebase-config.js`) |
 
 ## Run on your own computer
 VS Code Live Server only shows pages and can't run the `api` folder. To run everything locally: `npm i -g vercel`, then in this folder `vercel link`, `vercel env pull`, `vercel dev`, and open <http://localhost:3000>.
 
-Badge rules can be tested with `npm test`.
+Points, badge and reminder rules can be tested with `npm test`.

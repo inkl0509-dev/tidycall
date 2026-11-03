@@ -37,17 +37,37 @@ function bearer(req) {
   return m ? m[1].trim() : '';
 }
 
+/** Read a token's project without verifying it (only used to explain errors). */
+function tokenProject(token) {
+  try { return JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8')).aud || ''; } catch (e) { return ''; }
+}
+
 /** Verify the Firebase ID token sent by the browser. Optionally require a role. */
 async function requireUser(req, role) {
   const token = bearer(req);
-  if (!token) throw httpError(401, 'Please sign in again.');
+  if (!token) throw httpError(401, 'You are not signed in. Sign out and sign in again.');
   let user;
   try {
     user = await auth().verifyIdToken(token, true);
   } catch (e) {
-    throw httpError(401, 'Your session has expired. Please sign in again.');
+    if (e.status) throw e; // server setup problem (missing key)
+    const code = e.code || '';
+    const msg = String(e.message || '');
+    const serverProject = (() => { try { return serviceAccount().project_id || ''; } catch (x) { return ''; } })();
+    const appProject = tokenProject(token);
+    console.error('verifyIdToken failed:', code, msg, { serverProject, appProject });
+    if (appProject && serverProject && appProject !== serverProject) {
+      throw httpError(401, `Setup mismatch: the app uses Firebase project "${appProject}" but the server key (FIREBASE_SERVICE_ACCOUNT in Vercel) is for "${serverProject}". Download the key from the same project, update it in Vercel, and redeploy.`);
+    }
+    if (code === 'auth/id-token-revoked') throw httpError(401, 'You were signed out (your PIN was changed or your account was switched off). Sign in again.');
+    if (code === 'auth/user-disabled') throw httpError(401, 'This account is switched off. Ask a manager.');
+    if (code === 'auth/id-token-expired') throw httpError(401, 'Your session expired. Reload the page.');
+    if (/private key|PEM|credential|invalid_grant|DECODER/i.test(msg)) {
+      throw httpError(500, 'The server key (FIREBASE_SERVICE_ACCOUNT in Vercel) is damaged. Paste the whole .json file again, then redeploy.');
+    }
+    throw httpError(401, `Sign-in could not be checked (${code || msg.slice(0, 80)}). Sign out and sign in again.`);
   }
-  if (role && user.role !== role) throw httpError(403, 'Only managers can do this.');
+  if (role && user.role !== role) throw httpError(403, 'Only managers can do this. Sign out and sign in again if you were just made a manager.');
   return user;
 }
 
@@ -139,6 +159,6 @@ function route(methods, fn) {
 const clean = (v, max = 120) => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().slice(0, max);
 
 module.exports = {
-  db, auth, messaging, Timestamp, FieldValue,
+  db, auth, messaging, Timestamp, FieldValue, serviceAccount,
   httpError, bearer, requireUser, emailFor, baseUrl, todayKey, pushToUsers, route, clean, LOGIN_DOMAIN,
 };

@@ -38,6 +38,12 @@ service cloud.firestore {
           && changed().hasOnly(['status', 'open', 'cancelledAt', 'cancelledBy']);
     }
 
+    // Card in / card out records. Written only by the server (/api/duty).
+    match /shifts/{shiftId} {
+      allow read: if isManager() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow write: if false;
+    }
+
     // In-house maps (floor plans + pinned places).
     match /maps/{mapId} {
       allow read: if signedIn();
